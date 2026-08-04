@@ -36,50 +36,49 @@ systemctl is-active --quiet "$BOUNCER_SERVICE" || {
   die "$BOUNCER_SERVICE не запустился"
 }
 
-check_bouncer_json() {
+check_bouncer_raw() {
   local payload="$1"
-  BOUNCERS_JSON="$payload" python3 - "$BOUNCER_NAME" <<'PY'
-import json
+  BOUNCERS_RAW="$payload" python3 - "$BOUNCER_NAME" <<'PY'
+import csv
+import datetime as dt
+import io
 import os
 import sys
 
 expected = sys.argv[1]
-try:
-    data = json.loads(os.environ.get('BOUNCERS_JSON', ''))
-except Exception:
-    raise SystemExit(1)
+payload = os.environ.get('BOUNCERS_RAW', '')
+reader = csv.DictReader(io.StringIO(payload))
 
-objects = []
-def walk(value):
-    if isinstance(value, dict):
-        objects.append(value)
-        for item in value.values():
-            walk(item)
-    elif isinstance(value, list):
-        for item in value:
-            walk(item)
-walk(data)
-
-def get(obj, *names):
-    lowered = {str(k).lower().replace('-', '_'): v for k, v in obj.items()}
-    for name in names:
-        key = name.lower().replace('-', '_')
-        if key in lowered:
-            return lowered[key]
-    return None
-
-for obj in objects:
-    name = get(obj, 'name')
-    if name != expected:
+for original in reader:
+    row = {
+        str(key).strip().lower().replace('-', '_'): (value or '').strip()
+        for key, value in original.items()
+        if key is not None
+    }
+    if row.get('name') != expected:
         continue
-    valid = get(obj, 'valid', 'is_valid')
-    last_pull = get(obj, 'last_api_pull', 'last_pull', 'last_api_pull_at')
-    valid_ok = valid is True or str(valid).lower() in {'true', 'yes', '1', 'valid'}
-    pull_ok = last_pull not in (None, '', '0001-01-01T00:00:00Z')
-    if valid_ok and pull_ok:
-        print(last_pull)
-        raise SystemExit(0)
-    raise SystemExit(2)
+
+    # В raw-выводе CrowdSec колонка называется revoked, но для действующего
+    # ключа содержит значение validated.
+    state = row.get('revoked', '').lower()
+    valid_ok = state in {'validated', 'valid', 'false', '0', 'no'}
+    last_pull = row.get('last_pull', '')
+
+    if not valid_ok or not last_pull:
+        raise SystemExit(2)
+
+    try:
+        parsed = dt.datetime.fromisoformat(last_pull.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        age = (dt.datetime.now(dt.timezone.utc) - parsed.astimezone(dt.timezone.utc)).total_seconds()
+        if age < -300 or age > 900:
+            raise SystemExit(4)
+    except ValueError:
+        raise SystemExit(5)
+
+    print(last_pull)
+    raise SystemExit(0)
 
 raise SystemExit(3)
 PY
@@ -87,8 +86,8 @@ PY
 
 LAST_PULL=""
 for _ in {1..24}; do
-  JSON_OUTPUT="$(cscli bouncers list -o json 2>/dev/null || true)"
-  if LAST_PULL="$(check_bouncer_json "$JSON_OUTPUT" 2>/dev/null)"; then
+  RAW_OUTPUT="$(cscli bouncers list -o raw 2>/dev/null || true)"
+  if LAST_PULL="$(check_bouncer_raw "$RAW_OUTPUT" 2>/dev/null)"; then
     break
   fi
   sleep 5
@@ -97,11 +96,13 @@ done
 if [[ -z "$LAST_PULL" ]]; then
   printf '\nТекущие bouncers:\n' >&2
   cscli bouncers list >&2 || true
+  printf '\nRaw-вывод для диагностики:\n' >&2
+  cscli bouncers list -o raw >&2 || true
   printf '\nСтатус сервиса:\n' >&2
   systemctl status "$BOUNCER_SERVICE" --no-pager -l >&2 || true
   printf '\nПоследние логи bouncer:\n' >&2
   journalctl -u "$BOUNCER_SERVICE" -n 120 --no-pager -l >&2 || true
-  die "Bouncer $BOUNCER_NAME не выполнил валидный API pull"
+  die "Bouncer $BOUNCER_NAME не выполнил свежий валидный API pull"
 fi
 
 log "Bouncer зарегистрирован и подключён"
@@ -120,6 +121,6 @@ cscli console status 2>/dev/null || true
 cat <<'DONE'
 
 Локальная регистрация remediation component подтверждена.
-После enrollment и перезапуска CrowdSec компонент обычно появляется
-в CrowdSec Console в течение нескольких минут.
+После enrollment и перезапуска CrowdSec компонент должен появиться
+в CrowdSec Console после очередной синхронизации данных.
 DONE

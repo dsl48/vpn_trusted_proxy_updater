@@ -65,8 +65,7 @@ Email Beeline CDN:
         trusted_proxies_strict
         client_ip_headers X-Forwarded-For
 
-        protocols h1 h2 h3
-        max_header_size 65536
+
     }
 }
 ```

@@ -1,20 +1,23 @@
 # CrowdSec для Caddy CDN-origin
 
-Интерактивная установка CrowdSec на origin-ноду Caddy, работающую за Яндекс CDN, Билайн CDN или одновременно за обоими провайдерами.
+Интерактивная установка CrowdSec на Caddy-origin за Яндекс CDN, Билайн CDN или одновременно за обоими провайдерами.
 
-Установщик:
+## Что делает установщик
 
-- последовательно спрашивает, собирать ли доверенные диапазоны с Яндекс CDN и Билайн CDN;
-- позволяет выбрать только Яндекс, только Билайн или обоих провайдеров;
-- запрашивает учётные данные Билайн только при выборе Билайн CDN;
-- устанавливает CrowdSec Security Engine и базовые коллекции;
+- позволяет выбрать Яндекс CDN, Билайн CDN или обоих провайдеров;
+- использует формат вопросов `[Y/n]`, где пустой Enter означает `yes`;
+- запрашивает учётные данные Билайн только при выборе Beeline CDN;
+- устанавливает CrowdSec Security Engine и коллекции Linux, SSH и Caddy;
 - исправляет права `/var/log/caddy` и `access.log`;
 - подключает Caddy access log к CrowdSec;
-- получает и обновляет доверенные CDN-диапазоны;
-- объединяет только выбранные диапазоны для `trusted_proxies` Caddy;
-- создаёт CrowdSec AllowList для выбранных CDN и IP администратора;
-- применяет изменения Caddy только через проверенный graceful reload;
-- не устанавливает firewall bouncer автоматически.
+- получает и регулярно обновляет доверенные CDN-диапазоны;
+- создаёт общий `trusted_proxies` для Caddy;
+- создаёт CrowdSec AllowList для CDN и IP администратора;
+- автоматически определяет `nftables` или `iptables`;
+- устанавливает соответствующий CrowdSec firewall bouncer;
+- ограничивает firewall bouncer решениями SSH-сценариев;
+- предлагает подключить Security Engine к `app.crowdsec.net`;
+- применяет конфигурацию Caddy только через validation и graceful reload.
 
 ## Запуск одной командой
 
@@ -22,37 +25,84 @@
 curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/main/install.sh | sudo sh
 ```
 
-Интерактивный мастер задаёт вопросы по очереди:
+## Выбор CDN
+
+Мастер задаёт вопросы по очереди:
 
 ```text
-Собирать списки с Яндекс CDN? [да/нет]:
-Собирать списки с Билайн CDN? [да/нет]:
+Собирать списки с Яндекс CDN? [Y/n]:
+Собирать списки с Билайн CDN? [Y/n]:
 ```
+
+Ответы:
+
+- Enter, `yes` или `y` — включить провайдера;
+- `no` или `n` — не включать провайдера.
 
 Нужно выбрать хотя бы одного провайдера.
 
-При выборе Билайн CDN установщик объяснит назначение учётной записи, а затем запросит:
+При выборе Билайн CDN запрашиваются:
 
 ```text
 Email Beeline CDN:
 Пароль Beeline CDN:
 ```
 
-Учётная запись нужна только для локального получения временного API-токена и официального списка CDN-узлов через Beeline API. Пароль не выводится на экран. Данные сохраняются в:
+Учётная запись нужна только для локального получения временного API-токена и официального списка CDN-узлов через Beeline API. Пароль не выводится на экран. Данные сохраняются в `/etc/cdn-trusted-proxies.conf` с правами `0600 root:root`.
 
-```text
-/etc/cdn-trusted-proxies.conf
+## Firewall bouncer
+
+После настройки CDN установщик проверяет вывод:
+
+```bash
+iptables -V
 ```
 
-Права файла:
+Если вывод содержит `nf_tables`, устанавливается:
 
 ```text
-0600 root:root
+crowdsec-firewall-bouncer-nftables
 ```
 
-При выборе только Яндекс CDN учётные данные Билайн не запрашиваются и обращения к Beeline API не выполняются.
+Иначе устанавливается:
 
-## После установки
+```text
+crowdsec-firewall-bouncer-iptables
+```
+
+Конфигурация хранится в:
+
+```text
+/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
+```
+
+Для CDN-origin bouncer получает только решения сценариев, содержащих `ssh`. HTTP-алерты CrowdSec не превращаются в глобальную firewall-блокировку CDN edge. В режиме nftables используется только hook `input`.
+
+## Подключение к CrowdSec Console
+
+После установки bouncer мастер спросит:
+
+```text
+Подключить CrowdSec к панели app.crowdsec.net? [Y/n]:
+```
+
+Enter означает `yes`.
+
+Enrollment key нужно скопировать в CrowdSec Console:
+
+```text
+Security Engines → Add Security Engine
+```
+
+Ключ вводится скрыто. Установщик выполняет:
+
+```bash
+cscli console enroll ENROLL_KEY
+```
+
+Затем нужно открыть появившийся Security Engine в панели и нажать `Accept enroll`. После подтверждения вернитесь в терминал и нажмите Enter — установщик перезапустит CrowdSec.
+
+## Настройка Caddy
 
 Добавьте в глобальный блок `/etc/caddy/Caddyfile`:
 
@@ -64,13 +114,11 @@ Email Beeline CDN:
         import /etc/caddy/trusted-proxies.caddy
         trusted_proxies_strict
         client_ip_headers X-Forwarded-For
-
-
     }
 }
 ```
 
-Для VPN/XHTTP endpoint добавьте `log_skip`, чтобы туннельный трафик не анализировался CrowdSec:
+Для VPN/XHTTP endpoint добавьте `log_skip`:
 
 ```caddyfile
 handle @tunnel {
@@ -79,7 +127,7 @@ handle @tunnel {
 }
 ```
 
-Проверьте конфигурацию и выполните graceful reload:
+Проверка и graceful reload:
 
 ```bash
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -89,25 +137,32 @@ systemctl reload caddy
 ## Проверки
 
 ```bash
-systemctl status crowdsec --no-pager
-systemctl status cdn-trusted-proxies.timer --no-pager
+systemctl status crowdsec --no-pager -l
+systemctl status crowdsec-firewall-bouncer --no-pager -l
+systemctl status cdn-trusted-proxies.timer --no-pager -l
+cscli bouncers list
+cscli console status
 cscli metrics
 cscli allowlists list
-cat /etc/cdn-trusted-proxies.conf | sed -E 's/^(BEELINE_PASSWORD=).*/\1REDACTED/'
 ```
 
-Списки выбранных провайдеров:
+Для nftables:
+
+```bash
+nft list table ip crowdsec
+nft list table ip6 crowdsec6
+```
+
+Списки CDN:
 
 ```bash
 ls -l /etc/caddy/trusted-proxies.d/
 wc -l /etc/caddy/trusted-proxies.d/*.cidr
 ```
 
-Если при повторном запуске провайдер отключён, его старый CIDR-файл удаляется из активного набора и общий `trusted-proxies.caddy` перестраивается только из выбранных источников.
+При повторном запуске отключённый провайдер удаляется из активного набора, а общий `trusted-proxies.caddy` перестраивается только из выбранных источников.
 
 ## Закрепление версии
-
-Для воспроизводимой установки укажите тег или commit через переменную:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/main/install.sh \
@@ -121,4 +176,5 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 - `/etc/cdn-trusted-proxies.conf`;
 - `/etc/crowdsec/local_api_credentials.yaml`;
 - `/etc/crowdsec/online_api_credentials.yaml`;
-- `/etc/crowdsec/bouncers/*.yaml.local`.
+- `/etc/crowdsec/bouncers/*.yaml.local`;
+- enrollment key CrowdSec Console.

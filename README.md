@@ -13,6 +13,7 @@
 - получает и регулярно обновляет доверенные CDN-диапазоны;
 - создаёт общий `trusted_proxies` для Caddy;
 - создаёт CrowdSec AllowList для CDN и IP администратора;
+- переносит CrowdSec Local API с `127.0.0.1:8080` на `127.0.0.1:18888`;
 - автоматически определяет `nftables` или `iptables`;
 - устанавливает соответствующий CrowdSec firewall bouncer;
 - ограничивает firewall bouncer решениями SSH-сценариев;
@@ -49,6 +50,37 @@ Email Beeline CDN:
 ```
 
 Учётная запись нужна только для локального получения временного API-токена и официального списка CDN-узлов через Beeline API. Пароль не выводится на экран. Данные сохраняются в `/etc/cdn-trusted-proxies.conf` с правами `0600 root:root`.
+
+## CrowdSec Local API
+
+По умолчанию CrowdSec использует `127.0.0.1:8080`. Установщик переносит Local API на:
+
+```text
+http://127.0.0.1:18888/
+```
+
+Меняются одновременно:
+
+```text
+/etc/crowdsec/config.yaml
+/etc/crowdsec/local_api_credentials.yaml
+/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
+```
+
+Порт остаётся доступным только через loopback и не открывается наружу. Перед изменением установщик:
+
+- проверяет, что `127.0.0.1:18888` свободен;
+- сохраняет резервные копии конфигурации;
+- перезапускает CrowdSec;
+- проверяет Local API через `cscli`;
+- откатывает настройки при ошибке.
+
+Для ручного выбора другого локального порта:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/main/install.sh \
+  | sudo CROWDSEC_LAPI_PORT=18889 sh
+```
 
 ## Firewall bouncer
 
@@ -140,6 +172,10 @@ systemctl reload caddy
 systemctl status crowdsec --no-pager -l
 systemctl status crowdsec-firewall-bouncer --no-pager -l
 systemctl status cdn-trusted-proxies.timer --no-pager -l
+grep -n 'listen_uri' /etc/crowdsec/config.yaml
+grep -n '^url:' /etc/crowdsec/local_api_credentials.yaml
+grep -n '^api_url:' /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
+ss -lntp | grep ':18888'
 cscli bouncers list
 cscli console status
 cscli metrics

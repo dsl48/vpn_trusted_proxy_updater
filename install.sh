@@ -103,6 +103,7 @@ case "$PROFILE" in
   vless-selfsteal)
     download install-vless-selfsteal.sh
     download detect-selfsteal-site.py
+    download patch-vless-docker-reload.py
 
     python3 - "$TMP_DIR/install-vless-selfsteal.sh" <<'PY'
 import pathlib
@@ -163,6 +164,9 @@ text = text.replace(needle, replacement, 1)
 
 path.write_text(text, encoding='utf-8')
 PY
+
+    "$TMP_DIR/patch-vless-docker-reload.py" \
+      "$TMP_DIR/install-vless-selfsteal.sh"
 
     export CADDY_SELFSTEAL_DETECTOR="$TMP_DIR/detect-selfsteal-site.py"
     run_tty "$TMP_DIR/install-vless-selfsteal.sh"

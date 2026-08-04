@@ -75,8 +75,11 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 - определяет путь Caddyfile внутри контейнера, обычно `/etc/caddy/Caddyfile`;
 - проверяет конфигурацию командой `caddy validate` внутри контейнера;
 - сначала пытается выполнить `caddy reload`;
-- если Admin API Caddy отключён, отправляет контейнеру `SIGUSR1`;
+- если reload через Admin API недоступен или завершается ошибкой, выполняет `docker restart`;
+- ожидает восстановления контейнера до 30 секунд и при ошибке показывает последние 100 строк его логов;
 - проверяет доступ CrowdSec к Docker socket и Docker logs.
+
+Такой fallback применяется в том числе для Caddy 2.9.x и контейнеров с отключённым Admin API, где новый Caddyfile иначе может остаться только на диске и не попасть в работающий процесс.
 
 В Docker-режиме Caddy пишет JSON access log в `stdout`, а CrowdSec читает его через Docker datasource:
 

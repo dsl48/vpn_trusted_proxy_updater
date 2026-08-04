@@ -1,0 +1,14 @@
+# Secrets and runtime configuration
+.env
+*.secret
+*.token
+/etc/cdn-trusted-proxies.conf
+cdn-trusted-proxies.conf
+local_api_credentials.yaml
+online_api_credentials.yaml
+*.yaml.local
+
+# Local artifacts
+*.zip
+*.tar.gz
+.DS_Store

@@ -40,6 +40,60 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 
 Сценарий предназначен для прямой VLESS-ноды, где Caddy обслуживает selfsteal-сайт.
 
+После выбора профиля мастер уточняет, где запущен Caddy:
+
+```text
+Где запущен Caddy?
+  1 — На хосте через systemd
+  2 — В Docker
+```
+
+Если обнаружены Docker, работающий daemon и файл `/opt/remnanode/selfsteal/Caddyfile`, по умолчанию предлагается вариант `2`. В остальных случаях — вариант `1`.
+
+### Caddy на хосте
+
+Используются:
+
+```text
+/etc/caddy/Caddyfile
+/var/log/caddy/selfsteal-access.log
+```
+
+Конфигурация проверяется командой `caddy validate`, затем применяется через `systemctl reload caddy`.
+
+### Caddy в Docker
+
+По умолчанию предлагается Caddyfile:
+
+```text
+/opt/remnanode/selfsteal/Caddyfile
+```
+
+Скрипт:
+
+- находит работающий контейнер по bind mount этого файла;
+- определяет путь Caddyfile внутри контейнера, обычно `/etc/caddy/Caddyfile`;
+- проверяет конфигурацию командой `caddy validate` внутри контейнера;
+- сначала пытается выполнить `caddy reload`;
+- если Admin API Caddy отключён, отправляет контейнеру `SIGUSR1`;
+- проверяет доступ CrowdSec к Docker socket и Docker logs.
+
+В Docker-режиме Caddy пишет JSON access log в `stdout`, а CrowdSec читает его через Docker datasource:
+
+```yaml
+source: docker
+container_name:
+  - caddy-container-name
+follow_stdout: true
+follow_stderr: false
+labels:
+  type: caddy
+```
+
+Caddyfile обновляется без замены inode. Это необходимо, когда отдельный файл смонтирован в контейнер как bind mount.
+
+### Общие действия VLESS-профиля
+
 Мастер запрашивает:
 
 ```text
@@ -49,12 +103,9 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 
 Скрипт:
 
-- проверяет Caddy и `/etc/caddy/Caddyfile`;
 - находит ровно один site block по введённому адресу;
 - сохраняет резервную копию Caddyfile;
 - добавляет в выбранный site block управляемый JSON access log;
-- проверяет конфигурацию через `caddy validate`;
-- применяет её через graceful reload;
 - устанавливает CrowdSec и коллекции Linux, SSH и Caddy;
 - создаёт acquisition для selfsteal access log;
 - добавляет IP текущего SSH-подключения и указанные IP в AllowList;
@@ -63,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 
 ### Управляемый Caddy log
 
-В выбранный site block добавляется блок между маркерами:
+На хосте в выбранный site block добавляется:
 
 ```caddyfile
 # BEGIN CROWDSEC VLESS SELFSTEAL LOG
@@ -79,7 +130,18 @@ log crowdsec_selfsteal {
 # END CROWDSEC VLESS SELFSTEAL LOG
 ```
 
-При повторном запуске этот блок заменяется, а не дублируется.
+В Docker-режиме блок выглядит так:
+
+```caddyfile
+# BEGIN CROWDSEC VLESS SELFSTEAL LOG
+log crowdsec_selfsteal {
+    output stdout
+    format json
+}
+# END CROWDSEC VLESS SELFSTEAL LOG
+```
+
+При повторном запуске управляемый блок заменяется, а не дублируется.
 
 Acquisition создаётся в:
 
@@ -145,16 +207,31 @@ Enrollment key вводится скрыто. После `Accept enroll` уст�
 
 ## Проверки
 
+Общие проверки:
+
 ```bash
 systemctl status crowdsec --no-pager -l
 systemctl status crowdsec-firewall-bouncer --no-pager -l
-systemctl status caddy --no-pager -l
 cscli metrics show acquisition
 cscli metrics show bouncers
 cscli bouncers list
 cscli capi status
 cscli console status
 dpkg --audit
+```
+
+Для Caddy на хосте:
+
+```bash
+systemctl status caddy --no-pager -l
+```
+
+Для Caddy в Docker:
+
+```bash
+docker ps
+docker logs --tail 100 <caddy-container>
+docker inspect <caddy-container>
 ```
 
 Для nftables:

@@ -257,6 +257,15 @@ EOF_ACQUIS
 chown root:root /etc/crowdsec/acquis.d/caddy-selfsteal.yaml
 chmod 0644 /etc/crowdsec/acquis.d/caddy-selfsteal.yaml
 
+log "Проверяю и перезапускаю CrowdSec"
+crowdsec -t
+systemctl enable crowdsec >/dev/null
+systemctl restart crowdsec
+systemctl is-active --quiet crowdsec || {
+  journalctl -u crowdsec -n 120 --no-pager -l >&2 || true
+  die "CrowdSec не запустился"
+}
+
 if [[ -n "$ADMIN_IPS" ]]; then
   ALLOWLIST_NAME="vless-selfsteal-admins"
   if ! cscli allowlists inspect "$ALLOWLIST_NAME" >/dev/null 2>&1; then
@@ -281,15 +290,6 @@ if [[ -n "$ADMIN_IPS" ]]; then
 else
   log "Административные IP не заданы; AllowList не создавался"
 fi
-
-log "Проверяю и перезапускаю CrowdSec"
-crowdsec -t
-systemctl enable crowdsec >/dev/null
-systemctl restart crowdsec
-systemctl is-active --quiet crowdsec || {
-  journalctl -u crowdsec -n 120 --no-pager -l >&2 || true
-  die "CrowdSec не запустился"
-}
 
 printf '\nСостояние порта 443:\n'
 ss -lntp 2>/dev/null | grep -E '(^|[[:space:]])[^[:space:]]*:443([[:space:]]|$)' || \

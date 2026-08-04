@@ -38,13 +38,14 @@ systemctl is-active --quiet "$BOUNCER_SERVICE" || {
 
 check_bouncer_json() {
   local payload="$1"
-  python3 - "$BOUNCER_NAME" <<'PY' <<<"$payload"
+  BOUNCERS_JSON="$payload" python3 - "$BOUNCER_NAME" <<'PY'
 import json
+import os
 import sys
 
 expected = sys.argv[1]
 try:
-    data = json.load(sys.stdin)
+    data = json.loads(os.environ.get('BOUNCERS_JSON', ''))
 except Exception:
     raise SystemExit(1)
 

@@ -29,12 +29,28 @@ ask_yes_no_default_yes() {
   done
 }
 
+PROFILE="${CROWDSEC_INSTALL_PROFILE:-cdn-origin}"
+case "$PROFILE" in
+  cdn-origin)
+    BOUNCER_NAME="cdn-origin-firewall-bouncer"
+    SCENARIO_FILTER_LABEL="только SSH-сценарии"
+    SCENARIO_FILTER_YAML=$'  - ssh'
+    ;;
+  vless-selfsteal)
+    BOUNCER_NAME="vless-selfsteal-firewall-bouncer"
+    SCENARIO_FILTER_LABEL="SSH- и HTTP-сценарии"
+    SCENARIO_FILTER_YAML=$'  - ssh\n  - http'
+    ;;
+  *)
+    die "Неизвестный профиль установки: $PROFILE"
+    ;;
+esac
+
 command -v apt-get >/dev/null 2>&1 || die "Поддерживаются Debian/Ubuntu"
 command -v cscli >/dev/null 2>&1 || die "CrowdSec Security Engine не установлен"
 command -v python3 >/dev/null 2>&1 || die "Не найден python3"
 systemctl is-active --quiet crowdsec || die "Сервис crowdsec не запущен"
 
-# Переносим Local API с часто используемого 8080 на редкий loopback-порт.
 LAPI_HOST="127.0.0.1"
 LAPI_PORT="${CROWDSEC_LAPI_PORT:-18888}"
 [[ "$LAPI_PORT" =~ ^[0-9]+$ ]] || die "Некорректный CROWDSEC_LAPI_PORT: $LAPI_PORT"
@@ -112,13 +128,10 @@ api_url = sys.argv[4]
 
 def replace_single(path: pathlib.Path, key: str, value: str) -> None:
     text = path.read_text(encoding='utf-8')
-    pattern = re.compile(rf'^(\s*{re.escape(key)}\s*:\s*).*$',
-                         flags=re.MULTILINE)
+    pattern = re.compile(rf'^(\s*{re.escape(key)}\s*:\s*).*$', flags=re.MULTILINE)
     matches = list(pattern.finditer(text))
     if len(matches) != 1:
-        raise SystemExit(
-            f'{path}: ожидалась одна строка {key}, найдено {len(matches)}'
-        )
+        raise SystemExit(f'{path}: ожидалась одна строка {key}, найдено {len(matches)}')
     updated = pattern.sub(lambda match: match.group(1) + value, text, count=1)
     tmp = path.with_name(path.name + '.new')
     tmp.write_text(updated, encoding='utf-8')
@@ -175,7 +188,6 @@ fi
 
 FIREWALL_MODE=""
 BOUNCER_PACKAGE=""
-
 if command -v iptables >/dev/null 2>&1; then
   IPTABLES_VERSION="$(iptables -V 2>&1 || true)"
   if grep -qi 'nf_tables' <<<"$IPTABLES_VERSION"; then
@@ -194,15 +206,11 @@ fi
 
 log "Определён backend: $FIREWALL_MODE"
 
-BOUNCER_NAME="cdn-origin-firewall-bouncer"
 BOUNCER_SERVICE="crowdsec-firewall-bouncer"
 BOUNCER_DIR="/etc/crowdsec/bouncers"
 BOUNCER_BASE="$BOUNCER_DIR/crowdsec-firewall-bouncer.yaml"
 BOUNCER_LOCAL="$BOUNCER_DIR/crowdsec-firewall-bouncer.yaml.local"
 
-# Важно для повторной установки: пакетный postinst запускает сервис сразу.
-# Поэтому сначала останавливаем старый процесс и заранее готовим рабочий
-# api_url/api_key, а уже потом обновляем пакет.
 systemctl stop "$BOUNCER_SERVICE" >/dev/null 2>&1 || true
 install -d -o root -g root -m 0700 "$BOUNCER_DIR"
 
@@ -221,7 +229,7 @@ api_key: $BOUNCER_KEY
 mode: $FIREWALL_MODE
 update_frequency: 10s
 scenarios_containing:
-  - ssh
+$SCENARIO_FILTER_YAML
 scopes:
   - Ip
   - Range
@@ -252,9 +260,8 @@ command -v crowdsec-firewall-bouncer >/dev/null 2>&1 || \
   die "Бинарный файл crowdsec-firewall-bouncer не установлен"
 [[ -f "$BOUNCER_BASE" ]] || die "Не найден базовый конфиг $BOUNCER_BASE"
 
-if ! crowdsec-firewall-bouncer -c "$BOUNCER_BASE" -t; then
+crowdsec-firewall-bouncer -c "$BOUNCER_BASE" -t || \
   die "Итоговая конфигурация firewall bouncer не прошла проверку"
-fi
 
 systemctl daemon-reload
 systemctl enable "$BOUNCER_SERVICE" >/dev/null
@@ -263,16 +270,13 @@ if ! systemctl restart "$BOUNCER_SERVICE"; then
   die "Firewall bouncer не запустился после подготовки новой конфигурации"
 fi
 
-systemctl is-active --quiet "$BOUNCER_SERVICE" || \
-  die "Firewall bouncer не активен"
+systemctl is-active --quiet "$BOUNCER_SERVICE" || die "Firewall bouncer не активен"
 
-# Если apt/dpkg ранее оборвался на postinst, теперь сервис уже исправен и
-# повторная конфигурация пакета должна завершиться успешно.
 DPKG_AUDIT="$(dpkg --audit 2>&1 || true)"
 if (( APT_INSTALL_FAILED == 1 )) || [[ -n "${DPKG_AUDIT//[[:space:]]/}" ]]; then
   log "Завершаю прерванную настройку пакетов"
   if ! dpkg --configure -a; then
-    log "dpkg --configure -a не завершился; исправляю зависимости через apt-get -f install"
+    log "dpkg --configure -a не завершился; исправляю зависимости"
     apt-get -f install -y || die "Не удалось исправить состояние пакетов"
     dpkg --configure -a || die "Не удалось завершить настройку пакетов"
   fi
@@ -284,13 +288,12 @@ if [[ -n "${DPKG_AUDIT//[[:space:]]/}" ]]; then
   die "После установки dpkg сообщает о незавершённых пакетах"
 fi
 
-# postinst мог перезапустить сервис ещё раз; подтверждаем финальное состояние.
 systemctl restart "$BOUNCER_SERVICE"
 systemctl is-active --quiet "$BOUNCER_SERVICE" || \
   die "Firewall bouncer не активен после завершения dpkg"
 
 log "Firewall bouncer установлен и запущен"
-log "Применяются только решения SSH-сценариев; HTTP-решения не блокируются на firewall"
+log "Фильтр решений: $SCENARIO_FILTER_LABEL"
 
 if ask_yes_no_default_yes "Подключить CrowdSec к панели app.crowdsec.net?"; then
   cat <<'INFO'
@@ -327,7 +330,8 @@ ACCEPT
     systemctl restart crowdsec
     systemctl restart "$BOUNCER_SERVICE"
     systemctl is-active --quiet crowdsec || die "CrowdSec не запустился после enrollment"
-    systemctl is-active --quiet "$BOUNCER_SERVICE" || die "Firewall bouncer не запустился после enrollment"
+    systemctl is-active --quiet "$BOUNCER_SERVICE" || \
+      die "Firewall bouncer не запустился после enrollment"
     log "CrowdSec и firewall bouncer перезапущены после enrollment"
   fi
 else
@@ -336,8 +340,7 @@ fi
 
 printf '\nПроверка компонентов:\n'
 systemctl --no-pager --full status "$BOUNCER_SERVICE" 2>/dev/null | sed -n '1,12p' || true
-printf '\nCrowdSec Local API:\n'
-printf '%s\n' "$LAPI_URL"
+printf '\nCrowdSec Local API:\n%s\n' "$LAPI_URL"
 printf '\nЗарегистрированные bouncers:\n'
 cscli bouncers list || true
 printf '\nНастройки CrowdSec Console:\n'
@@ -346,8 +349,10 @@ cscli console status || true
 cat <<DONE
 
 Настройка firewall bouncer завершена.
+Профиль: $PROFILE
 CrowdSec Local API: $LAPI_URL
 Backend: $FIREWALL_MODE
 Пакет: $BOUNCER_PACKAGE
-Фильтр решений: только SSH-сценарии
+Bouncer: $BOUNCER_NAME
+Фильтр решений: $SCENARIO_FILTER_LABEL
 DONE

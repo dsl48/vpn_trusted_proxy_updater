@@ -1,15 +1,18 @@
 # CrowdSec для Caddy CDN-origin
 
-Интерактивная установка CrowdSec на origin-ноду Caddy, работающую за Yandex CDN и Beeline CDN.
+Интерактивная установка CrowdSec на origin-ноду Caddy, работающую за Яндекс CDN, Билайн CDN или одновременно за обоими провайдерами.
 
 Установщик:
 
+- последовательно спрашивает, собирать ли доверенные диапазоны с Яндекс CDN и Билайн CDN;
+- позволяет выбрать только Яндекс, только Билайн или обоих провайдеров;
+- запрашивает учётные данные Билайн только при выборе Билайн CDN;
 - устанавливает CrowdSec Security Engine и базовые коллекции;
 - исправляет права `/var/log/caddy` и `access.log`;
 - подключает Caddy access log к CrowdSec;
-- получает и обновляет доверенные диапазоны Yandex и Beeline;
-- объединяет диапазоны для `trusted_proxies` Caddy;
-- создаёт CrowdSec AllowLists для CDN и IP администратора;
+- получает и обновляет доверенные CDN-диапазоны;
+- объединяет только выбранные диапазоны для `trusted_proxies` Caddy;
+- создаёт CrowdSec AllowList для выбранных CDN и IP администратора;
 - применяет изменения Caddy только через проверенный graceful reload;
 - не устанавливает firewall bouncer автоматически.
 
@@ -19,7 +22,35 @@
 curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/main/install.sh | sudo sh
 ```
 
-Команда запускает интерактивный мастер и запросит учётные данные Beeline CDN через `/dev/tty`.
+Интерактивный мастер задаёт вопросы по очереди:
+
+```text
+Собирать списки с Яндекс CDN? [да/нет]:
+Собирать списки с Билайн CDN? [да/нет]:
+```
+
+Нужно выбрать хотя бы одного провайдера.
+
+При выборе Билайн CDN установщик объяснит назначение учётной записи, а затем запросит:
+
+```text
+Email Beeline CDN:
+Пароль Beeline CDN:
+```
+
+Учётная запись нужна только для локального получения временного API-токена и официального списка CDN-узлов через Beeline API. Пароль не выводится на экран. Данные сохраняются в:
+
+```text
+/etc/cdn-trusted-proxies.conf
+```
+
+Права файла:
+
+```text
+0600 root:root
+```
+
+При выборе только Яндекс CDN учётные данные Билайн не запрашиваются и обращения к Beeline API не выполняются.
 
 ## После установки
 
@@ -61,10 +92,19 @@ systemctl reload caddy
 ```bash
 systemctl status crowdsec --no-pager
 systemctl status cdn-trusted-proxies.timer --no-pager
-systemctl status crowdsec-cdn-allowlist.path --no-pager
 cscli metrics
 cscli allowlists list
+cat /etc/cdn-trusted-proxies.conf | sed -E 's/^(BEELINE_PASSWORD=).*/\1REDACTED/'
 ```
+
+Списки выбранных провайдеров:
+
+```bash
+ls -l /etc/caddy/trusted-proxies.d/
+wc -l /etc/caddy/trusted-proxies.d/*.cidr
+```
+
+Если при повторном запуске провайдер отключён, его старый CIDR-файл удаляется из активного набора и общий `trusted-proxies.caddy` перестраивается только из выбранных источников.
 
 ## Закрепление версии
 

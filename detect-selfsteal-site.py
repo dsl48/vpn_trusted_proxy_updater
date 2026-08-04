@@ -4,10 +4,10 @@ import re
 import sys
 
 
-def code_part(line: str) -> str:
+def code_part(line):
     quote = None
     escaped = False
-    out: list[str] = []
+    out = []
     for char in line:
         if escaped:
             out.append(char)
@@ -32,35 +32,35 @@ def code_part(line: str) -> str:
     return "".join(out).rstrip()
 
 
-def structural_delta(line: str) -> int:
+def structural_delta(line):
     code = code_part(line)
     opening = 1 if re.search(r"\{\s*$", code) else 0
     closing = 1 if re.match(r"^\s*}", code) else 0
     return opening - closing
 
 
-def opening_header(line: str) -> str | None:
+def opening_header(line):
     code = code_part(line)
     if not re.search(r"\{\s*$", code):
         return None
     return code.rsplit("{", 1)[0].strip()
 
 
-def header_tokens(header: str) -> list[str]:
+def header_tokens(header):
     return [item for item in re.split(r"[\s,]+", header) if item]
 
 
-def is_selfsteal_body(body: str) -> bool:
+def is_selfsteal_body(body):
     return bool(
         re.search(r"(?m)^\s*bind\s+unix/", body)
         and re.search(r"(?m)^\s*file_server(?:\s|$)", body)
     )
 
 
-def detect(path: pathlib.Path) -> str | None:
+def detect(path):
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     depth = 0
-    blocks: list[tuple[str, list[str], str]] = []
+    blocks = []
 
     for index, line in enumerate(lines):
         before = depth
@@ -79,8 +79,8 @@ def detect(path: pathlib.Path) -> str | None:
                 blocks.append((header, header_tokens(header), body))
         depth += delta
 
-    exact: list[str] = []
-    generic: list[str] = []
+    exact = []
+    generic = []
     for header, tokens, body in blocks:
         if not is_selfsteal_body(body):
             continue
@@ -102,13 +102,13 @@ def detect(path: pathlib.Path) -> str | None:
     return None
 
 
-def main() -> int:
+def main():
     if len(sys.argv) != 2:
         print("usage: detect-selfsteal-site.py CADDYFILE", file=sys.stderr)
         return 2
     path = pathlib.Path(sys.argv[1])
     if not path.is_file():
-        print(f"Caddyfile not found: {path}", file=sys.stderr)
+        print("Caddyfile not found: {}".format(path), file=sys.stderr)
         return 2
     result = detect(path)
     if result:

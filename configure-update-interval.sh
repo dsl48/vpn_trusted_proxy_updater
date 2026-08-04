@@ -50,9 +50,10 @@ while true; do
   printf 'Введите значение вида 30m, 1h, 6h или 1d.\n'
 done
 
-TMP_TIMER="$(mktemp /tmp/cdn-trusted-proxies.timer.XXXXXX)"
+TMP_DIR="$(mktemp -d /tmp/cdn-update-timer.XXXXXX)"
+TMP_TIMER="$TMP_DIR/cdn-trusted-proxies.timer"
 cleanup() {
-  rm -f "$TMP_TIMER"
+  rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT HUP INT TERM
 

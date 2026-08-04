@@ -11,6 +11,7 @@
 - исправляет права `/var/log/caddy` и `access.log`;
 - подключает Caddy access log к CrowdSec;
 - получает и регулярно обновляет доверенные CDN-диапазоны;
+- предлагает выбрать период обновления списков, по умолчанию `1h`;
 - создаёт общий `trusted_proxies` для Caddy;
 - создаёт CrowdSec AllowList для CDN и IP администратора;
 - переносит CrowdSec Local API с `127.0.0.1:8080` на `127.0.0.1:18888`;
@@ -50,6 +51,36 @@ Email Beeline CDN:
 ```
 
 Учётная запись нужна только для локального получения временного API-токена и официального списка CDN-узлов через Beeline API. Пароль не выводится на экран. Данные сохраняются в `/etc/cdn-trusted-proxies.conf` с правами `0600 root:root`.
+
+## Частота обновления CDN-списков
+
+После первого получения диапазонов мастер спросит:
+
+```text
+Как часто обновлять списки CDN? [1h]:
+```
+
+Пустой Enter оставляет период `1h`. Поддерживаются минуты, часы и дни:
+
+```text
+30m
+1h
+6h
+1d
+```
+
+Минимальный период — `5m`. Выбранное значение записывается в systemd timer:
+
+```text
+/etc/systemd/system/cdn-trusted-proxies.timer
+```
+
+Проверить расписание:
+
+```bash
+systemctl list-timers cdn-trusted-proxies.timer --all
+systemctl cat cdn-trusted-proxies.timer
+```
 
 ## CrowdSec Local API
 
@@ -172,6 +203,7 @@ systemctl reload caddy
 systemctl status crowdsec --no-pager -l
 systemctl status crowdsec-firewall-bouncer --no-pager -l
 systemctl status cdn-trusted-proxies.timer --no-pager -l
+systemctl list-timers cdn-trusted-proxies.timer --all
 grep -n 'listen_uri' /etc/crowdsec/config.yaml
 grep -n '^url:' /etc/crowdsec/local_api_credentials.yaml
 grep -n '^api_url:' /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local

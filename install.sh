@@ -21,6 +21,14 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+# sudo и некоторые панели запуска могут удалить SSH_CONNECTION.
+# Основной установщик использует эту переменную только для автоматического
+# добавления IP администратора в CrowdSec AllowList. Пустое значение безопасно.
+if [ -z "${SSH_CONNECTION:-}" ] && [ -n "${SSH_CLIENT:-}" ]; then
+  SSH_CONNECTION="$SSH_CLIENT"
+fi
+export SSH_CONNECTION="${SSH_CONNECTION:-}"
+
 printf '%s\n' "[bootstrap] Загружаю установщик из ${REPO}@${REF}"
 curl -fsSL --retry 3 --connect-timeout 15 "$URL" -o "$TMP"
 chmod 0700 "$TMP"

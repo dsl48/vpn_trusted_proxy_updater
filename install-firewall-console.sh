@@ -165,7 +165,6 @@ if ! systemctl is-active --quiet crowdsec || \
 fi
 
 log "CrowdSec Local API работает на $LAPI_LISTEN"
-
 log "Определяю используемый firewall backend"
 
 if ! command -v iptables >/dev/null 2>&1 && ! command -v nft >/dev/null 2>&1; then
@@ -194,19 +193,19 @@ else
 fi
 
 log "Определён backend: $FIREWALL_MODE"
-log "Устанавливаю пакет: $BOUNCER_PACKAGE"
-
-export DEBIAN_FRONTEND=noninteractive
-if ! apt-get install -y "$BOUNCER_PACKAGE"; then
-  log "Пакет сообщил ошибку post-install; проверяю наличие установленного bouncer"
-fi
-
-command -v crowdsec-firewall-bouncer >/dev/null 2>&1 || \
-  die "Бинарный файл crowdsec-firewall-bouncer не установлен"
-
-systemctl stop crowdsec-firewall-bouncer >/dev/null 2>&1 || true
 
 BOUNCER_NAME="cdn-origin-firewall-bouncer"
+BOUNCER_SERVICE="crowdsec-firewall-bouncer"
+BOUNCER_DIR="/etc/crowdsec/bouncers"
+BOUNCER_BASE="$BOUNCER_DIR/crowdsec-firewall-bouncer.yaml"
+BOUNCER_LOCAL="$BOUNCER_DIR/crowdsec-firewall-bouncer.yaml.local"
+
+# Важно для повторной установки: пакетный postinst запускает сервис сразу.
+# Поэтому сначала останавливаем старый процесс и заранее готовим рабочий
+# api_url/api_key, а уже потом обновляем пакет.
+systemctl stop "$BOUNCER_SERVICE" >/dev/null 2>&1 || true
+install -d -o root -g root -m 0700 "$BOUNCER_DIR"
+
 BOUNCER_KEY="$(python3 - <<'PY'
 import secrets
 print(secrets.token_urlsafe(36))
@@ -215,10 +214,6 @@ PY
 
 cscli bouncers delete "$BOUNCER_NAME" --ignore-missing >/dev/null 2>&1 || true
 cscli bouncers add "$BOUNCER_NAME" --key "$BOUNCER_KEY" >/dev/null
-
-install -d -o root -g root -m 0700 /etc/crowdsec/bouncers
-BOUNCER_BASE=/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
-BOUNCER_LOCAL=/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
 
 cat >"$BOUNCER_LOCAL" <<EOF_CONFIG
 api_url: $LAPI_URL
@@ -243,22 +238,56 @@ fi
 
 chown root:root "$BOUNCER_LOCAL"
 chmod 0600 "$BOUNCER_LOCAL"
-
-if [[ ! -f "$BOUNCER_BASE" ]]; then
-  install -o root -g root -m 0600 "$BOUNCER_LOCAL" "$BOUNCER_BASE"
-fi
-
 unset BOUNCER_KEY
 
-systemctl daemon-reload
-systemctl enable crowdsec-firewall-bouncer >/dev/null
-if ! systemctl restart crowdsec-firewall-bouncer; then
-  journalctl -u crowdsec-firewall-bouncer -n 100 --no-pager -l >&2 || true
-  die "Firewall bouncer не запустился"
+log "Устанавливаю пакет: $BOUNCER_PACKAGE"
+export DEBIAN_FRONTEND=noninteractive
+APT_INSTALL_FAILED=0
+if ! apt-get install -y "$BOUNCER_PACKAGE"; then
+  APT_INSTALL_FAILED=1
+  log "Пакет сообщил ошибку post-install; запускаю восстановление поверх подготовленной конфигурации"
 fi
 
-systemctl is-active --quiet crowdsec-firewall-bouncer || \
+command -v crowdsec-firewall-bouncer >/dev/null 2>&1 || \
+  die "Бинарный файл crowdsec-firewall-bouncer не установлен"
+[[ -f "$BOUNCER_BASE" ]] || die "Не найден базовый конфиг $BOUNCER_BASE"
+
+if ! crowdsec-firewall-bouncer -c "$BOUNCER_BASE" -t; then
+  die "Итоговая конфигурация firewall bouncer не прошла проверку"
+fi
+
+systemctl daemon-reload
+systemctl enable "$BOUNCER_SERVICE" >/dev/null
+if ! systemctl restart "$BOUNCER_SERVICE"; then
+  journalctl -u "$BOUNCER_SERVICE" -n 120 --no-pager -l >&2 || true
+  die "Firewall bouncer не запустился после подготовки новой конфигурации"
+fi
+
+systemctl is-active --quiet "$BOUNCER_SERVICE" || \
   die "Firewall bouncer не активен"
+
+# Если apt/dpkg ранее оборвался на postinst, теперь сервис уже исправен и
+# повторная конфигурация пакета должна завершиться успешно.
+DPKG_AUDIT="$(dpkg --audit 2>&1 || true)"
+if (( APT_INSTALL_FAILED == 1 )) || [[ -n "${DPKG_AUDIT//[[:space:]]/}" ]]; then
+  log "Завершаю прерванную настройку пакетов"
+  if ! dpkg --configure -a; then
+    log "dpkg --configure -a не завершился; исправляю зависимости через apt-get -f install"
+    apt-get -f install -y || die "Не удалось исправить состояние пакетов"
+    dpkg --configure -a || die "Не удалось завершить настройку пакетов"
+  fi
+fi
+
+DPKG_AUDIT="$(dpkg --audit 2>&1 || true)"
+if [[ -n "${DPKG_AUDIT//[[:space:]]/}" ]]; then
+  printf '%s\n' "$DPKG_AUDIT" >&2
+  die "После установки dpkg сообщает о незавершённых пакетах"
+fi
+
+# postinst мог перезапустить сервис ещё раз; подтверждаем финальное состояние.
+systemctl restart "$BOUNCER_SERVICE"
+systemctl is-active --quiet "$BOUNCER_SERVICE" || \
+  die "Firewall bouncer не активен после завершения dpkg"
 
 log "Firewall bouncer установлен и запущен"
 log "Применяются только решения SSH-сценариев; HTTP-решения не блокируются на firewall"
@@ -296,15 +325,17 @@ INFO
 ACCEPT
     read -r -p "После принятия подключения нажмите Enter для перезапуска CrowdSec..." _
     systemctl restart crowdsec
+    systemctl restart "$BOUNCER_SERVICE"
     systemctl is-active --quiet crowdsec || die "CrowdSec не запустился после enrollment"
-    log "CrowdSec перезапущен после enrollment"
+    systemctl is-active --quiet "$BOUNCER_SERVICE" || die "Firewall bouncer не запустился после enrollment"
+    log "CrowdSec и firewall bouncer перезапущены после enrollment"
   fi
 else
   log "Подключение к CrowdSec Console пропущено"
 fi
 
 printf '\nПроверка компонентов:\n'
-systemctl --no-pager --full status crowdsec-firewall-bouncer 2>/dev/null | sed -n '1,12p' || true
+systemctl --no-pager --full status "$BOUNCER_SERVICE" 2>/dev/null | sed -n '1,12p' || true
 printf '\nCrowdSec Local API:\n'
 printf '%s\n' "$LAPI_URL"
 printf '\nЗарегистрированные bouncers:\n'

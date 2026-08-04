@@ -31,7 +31,140 @@ ask_yes_no_default_yes() {
 
 command -v apt-get >/dev/null 2>&1 || die "Поддерживаются Debian/Ubuntu"
 command -v cscli >/dev/null 2>&1 || die "CrowdSec Security Engine не установлен"
+command -v python3 >/dev/null 2>&1 || die "Не найден python3"
 systemctl is-active --quiet crowdsec || die "Сервис crowdsec не запущен"
+
+# Переносим Local API с часто используемого 8080 на редкий loopback-порт.
+LAPI_HOST="127.0.0.1"
+LAPI_PORT="${CROWDSEC_LAPI_PORT:-18888}"
+[[ "$LAPI_PORT" =~ ^[0-9]+$ ]] || die "Некорректный CROWDSEC_LAPI_PORT: $LAPI_PORT"
+(( LAPI_PORT >= 1024 && LAPI_PORT <= 65535 )) || \
+  die "Порт CrowdSec Local API должен быть в диапазоне 1024-65535"
+
+LAPI_LISTEN="${LAPI_HOST}:${LAPI_PORT}"
+LAPI_CREDENTIALS_URL="http://${LAPI_LISTEN}"
+LAPI_URL="${LAPI_CREDENTIALS_URL}/"
+CROWDSEC_CONFIG="/etc/crowdsec/config.yaml"
+LAPI_CREDENTIALS="/etc/crowdsec/local_api_credentials.yaml"
+
+[[ -f "$CROWDSEC_CONFIG" ]] || die "Не найден $CROWDSEC_CONFIG"
+[[ -f "$LAPI_CREDENTIALS" ]] || die "Не найден $LAPI_CREDENTIALS"
+
+CURRENT_LISTEN="$(
+  awk '
+    /^[[:space:]]*listen_uri:[[:space:]]*/ {
+      sub(/^[[:space:]]*listen_uri:[[:space:]]*/, "")
+      sub(/[[:space:]]*#.*/, "")
+      gsub(/["'"'"'[:space:]]/, "")
+      print
+      exit
+    }
+  ' "$CROWDSEC_CONFIG"
+)"
+[[ -n "$CURRENT_LISTEN" ]] || die "Не найден api.server.listen_uri в $CROWDSEC_CONFIG"
+
+if [[ "$CURRENT_LISTEN" != "$LAPI_LISTEN" ]]; then
+  if ! python3 - "$LAPI_HOST" "$LAPI_PORT" <<'PY'
+import socket
+import sys
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    sock.bind((host, port))
+except OSError as exc:
+    raise SystemExit(f'порт {host}:{port} занят: {exc}')
+finally:
+    sock.close()
+PY
+  then
+    die "Нельзя перенести CrowdSec Local API на $LAPI_LISTEN"
+  fi
+fi
+
+LAPI_BACKUP_DIR="/var/lib/crowdsec/lapi-port-backups/$(date +%Y%m%d-%H%M%S)"
+install -d -o root -g root -m 0700 "$LAPI_BACKUP_DIR"
+cp -a "$CROWDSEC_CONFIG" "$LAPI_BACKUP_DIR/config.yaml"
+cp -a "$LAPI_CREDENTIALS" "$LAPI_BACKUP_DIR/local_api_credentials.yaml"
+
+rollback_lapi() {
+  log "Откатываю настройки CrowdSec Local API"
+  cp -a "$LAPI_BACKUP_DIR/config.yaml" "$CROWDSEC_CONFIG"
+  cp -a "$LAPI_BACKUP_DIR/local_api_credentials.yaml" "$LAPI_CREDENTIALS"
+  systemctl restart crowdsec >/dev/null 2>&1 || true
+}
+
+log "Настраиваю CrowdSec Local API на $LAPI_LISTEN"
+python3 - \
+  "$CROWDSEC_CONFIG" \
+  "$LAPI_CREDENTIALS" \
+  "$LAPI_LISTEN" \
+  "$LAPI_CREDENTIALS_URL" <<'PY'
+import pathlib
+import re
+import sys
+
+config_path = pathlib.Path(sys.argv[1])
+credentials_path = pathlib.Path(sys.argv[2])
+listen_uri = sys.argv[3]
+api_url = sys.argv[4]
+
+def replace_single(path: pathlib.Path, key: str, value: str) -> None:
+    text = path.read_text(encoding='utf-8')
+    pattern = re.compile(rf'^(\s*{re.escape(key)}\s*:\s*).*$',
+                         flags=re.MULTILINE)
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        raise SystemExit(
+            f'{path}: ожидалась одна строка {key}, найдено {len(matches)}'
+        )
+    updated = pattern.sub(lambda match: match.group(1) + value, text, count=1)
+    tmp = path.with_name(path.name + '.new')
+    tmp.write_text(updated, encoding='utf-8')
+    tmp.chmod(path.stat().st_mode & 0o777)
+    tmp.replace(path)
+
+replace_single(config_path, 'listen_uri', listen_uri)
+replace_single(credentials_path, 'url', api_url)
+PY
+
+chown root:root "$CROWDSEC_CONFIG" "$LAPI_CREDENTIALS"
+chmod 0600 "$LAPI_CREDENTIALS"
+
+if ! systemctl restart crowdsec; then
+  rollback_lapi
+  die "CrowdSec не запустился после изменения Local API порта"
+fi
+
+for _ in {1..30}; do
+  if python3 - "$LAPI_HOST" "$LAPI_PORT" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.settimeout(1)
+try:
+    sock.connect((sys.argv[1], int(sys.argv[2])))
+except OSError:
+    raise SystemExit(1)
+finally:
+    sock.close()
+PY
+  then
+    break
+  fi
+  sleep 1
+done
+
+if ! systemctl is-active --quiet crowdsec || \
+   ! cscli machines list >/dev/null 2>&1; then
+  journalctl -u crowdsec -n 100 --no-pager -l >&2 || true
+  rollback_lapi
+  die "CrowdSec Local API недоступен на $LAPI_LISTEN"
+fi
+
+log "CrowdSec Local API работает на $LAPI_LISTEN"
 
 log "Определяю используемый firewall backend"
 
@@ -88,7 +221,7 @@ BOUNCER_BASE=/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
 BOUNCER_LOCAL=/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
 
 cat >"$BOUNCER_LOCAL" <<EOF_CONFIG
-api_url: http://127.0.0.1:8080/
+api_url: $LAPI_URL
 api_key: $BOUNCER_KEY
 mode: $FIREWALL_MODE
 update_frequency: 10s
@@ -172,6 +305,8 @@ fi
 
 printf '\nПроверка компонентов:\n'
 systemctl --no-pager --full status crowdsec-firewall-bouncer 2>/dev/null | sed -n '1,12p' || true
+printf '\nCrowdSec Local API:\n'
+printf '%s\n' "$LAPI_URL"
 printf '\nЗарегистрированные bouncers:\n'
 cscli bouncers list || true
 printf '\nНастройки CrowdSec Console:\n'
@@ -180,6 +315,7 @@ cscli console status || true
 cat <<DONE
 
 Настройка firewall bouncer завершена.
+CrowdSec Local API: $LAPI_URL
 Backend: $FIREWALL_MODE
 Пакет: $BOUNCER_PACKAGE
 Фильтр решений: только SSH-сценарии

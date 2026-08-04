@@ -25,11 +25,6 @@ printf '%s\n' "[bootstrap] Загружаю установщик из ${REPO}@${
 curl -fsSL --retry 3 --connect-timeout 15 "$URL" -o "$TMP"
 chmod 0700 "$TMP"
 
-# Compatibility hotfix: официальный пакет CrowdSec обычно запускает
-# Security Engine от root и может не создавать пользователя crowdsec.
-# Старые версии установщика безусловно вызывали usermod для этого пользователя.
-sed -i '/^[[:space:]]*usermod -aG caddy crowdsec[[:space:]]*$/d' "$TMP"
-
 if [ ! -r /dev/tty ]; then
   echo "ERROR: нужен интерактивный терминал /dev/tty" >&2
   exit 1

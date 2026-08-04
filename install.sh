@@ -4,12 +4,14 @@ set -eu
 REPO="dsl48/vpn_trusted_proxy_updater"
 REF="${VPN_INSTALL_REF:-main}"
 MAIN_URL="https://raw.githubusercontent.com/${REPO}/${REF}/install-crowdsec-cdn-origin.sh"
+INTERVAL_URL="https://raw.githubusercontent.com/${REPO}/${REF}/configure-update-interval.sh"
 POST_URL="https://raw.githubusercontent.com/${REPO}/${REF}/install-firewall-console.sh"
 TMP_MAIN="$(mktemp /tmp/crowdsec-cdn-origin.XXXXXX)"
+TMP_INTERVAL="$(mktemp /tmp/crowdsec-update-interval.XXXXXX)"
 TMP_POST="$(mktemp /tmp/crowdsec-firewall-console.XXXXXX)"
 
 cleanup() {
-  rm -f "$TMP_MAIN" "$TMP_POST"
+  rm -f "$TMP_MAIN" "$TMP_INTERVAL" "$TMP_POST"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -31,10 +33,13 @@ export SSH_CONNECTION="${SSH_CONNECTION:-}"
 printf '%s\n' "[bootstrap] Загружаю основной установщик из ${REPO}@${REF}"
 curl -fsSL --retry 3 --connect-timeout 15 "$MAIN_URL" -o "$TMP_MAIN"
 
+printf '%s\n' "[bootstrap] Загружаю настройку частоты обновления CDN-списков"
+curl -fsSL --retry 3 --connect-timeout 15 "$INTERVAL_URL" -o "$TMP_INTERVAL"
+
 printf '%s\n' "[bootstrap] Загружаю этап firewall bouncer и CrowdSec Console"
 curl -fsSL --retry 3 --connect-timeout 15 "$POST_URL" -o "$TMP_POST"
 
-chmod 0700 "$TMP_MAIN" "$TMP_POST"
+chmod 0700 "$TMP_MAIN" "$TMP_INTERVAL" "$TMP_POST"
 
 # Выбор CDN отображается как [Y/n], пустой Enter означает yes.
 sed -i \
@@ -53,4 +58,5 @@ if [ ! -r /dev/tty ]; then
 fi
 
 /bin/bash "$TMP_MAIN" </dev/tty >/dev/tty 2>&1
+/bin/bash "$TMP_INTERVAL" </dev/tty >/dev/tty 2>&1
 /bin/bash "$TMP_POST" </dev/tty >/dev/tty 2>&1

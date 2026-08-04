@@ -1,96 +1,107 @@
-# CrowdSec для Caddy CDN-origin
+# CrowdSec installer for VPN nodes
 
-Интерактивная установка CrowdSec на Caddy-origin за Яндекс CDN, Билайн CDN или одновременно за обоими провайдерами.
+Интерактивный установщик CrowdSec для Caddy-серверов проекта VPN.
 
-## Что делает установщик
+## Поддерживаемые профили
 
-- позволяет выбрать Яндекс CDN, Билайн CDN или обоих провайдеров;
-- использует формат вопросов `[Y/n]`, где пустой Enter означает `yes`;
-- запрашивает учётные данные Билайн только при выборе Beeline CDN;
-- устанавливает CrowdSec Security Engine и коллекции Linux, SSH и Caddy;
-- исправляет права `/var/log/caddy` и `access.log`;
-- подключает Caddy access log к CrowdSec;
-- получает и регулярно обновляет доверенные CDN-диапазоны;
-- предлагает выбрать период обновления списков, по умолчанию `1h`;
-- создаёт общий `trusted_proxies` для Caddy;
-- создаёт CrowdSec AllowList для CDN и IP администратора;
-- переносит CrowdSec Local API с `127.0.0.1:8080` на `127.0.0.1:18888`;
-- автоматически определяет `nftables` или `iptables`;
-- устанавливает соответствующий CrowdSec firewall bouncer;
-- ограничивает firewall bouncer решениями SSH-сценариев;
-- предлагает подключить Security Engine к `app.crowdsec.net`;
-- применяет конфигурацию Caddy только через validation и graceful reload.
+При запуске мастер спрашивает, куда выполняется установка:
 
-## Запуск одной командой
+```text
+Куда устанавливается CrowdSec?
+  1 — Панель управления (пока не реализовано)
+  2 — Нода CDN Origin
+  3 — Нода VLESS + selfsteal на Caddy
+```
+
+Пустой Enter выбирает профиль `CDN Origin`.
+
+## Запуск
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/main/install.sh | sudo sh
 ```
 
-## Выбор CDN
+Для интерактивного режима требуется доступный `/dev/tty`.
 
-Мастер задаёт вопросы по очереди:
+## Профиль CDN Origin
 
-```text
-Собирать списки с Яндекс CDN? [Y/n]:
-Собирать списки с Билайн CDN? [Y/n]:
-```
+Существующий сценарий:
 
-Ответы:
+- выбор Яндекс CDN, Билайн CDN или обоих провайдеров;
+- получение и регулярное обновление официальных CDN-диапазонов;
+- настройка `trusted_proxies` для Caddy;
+- AllowList для CDN и IP администратора;
+- выбор частоты обновления списков, по умолчанию `1h`;
+- firewall bouncer только для SSH-решений, чтобы HTTP-решение не заблокировало CDN edge;
+- подключение к CrowdSec Console;
+- проверка регистрации remediation component и свежего API pull.
 
-- Enter, `yes` или `y` — включить провайдера;
-- `no` или `n` — не включать провайдера.
+## Профиль VLESS + selfsteal
 
-Нужно выбрать хотя бы одного провайдера.
+Сценарий предназначен для прямой VLESS-ноды, где Caddy обслуживает selfsteal-сайт.
 
-При выборе Билайн CDN запрашиваются:
-
-```text
-Email Beeline CDN:
-Пароль Beeline CDN:
-```
-
-Учётная запись нужна только для локального получения временного API-токена и официального списка CDN-узлов через Beeline API. Пароль не выводится на экран. Данные сохраняются в `/etc/cdn-trusted-proxies.conf` с правами `0600 root:root`.
-
-## Частота обновления CDN-списков
-
-После первого получения диапазонов мастер спросит:
+Мастер запрашивает:
 
 ```text
-Как часто обновлять списки CDN? [1h]:
+Домен/адрес selfsteal-сайта:
+Дополнительные доверенные IP через пробел или запятую [нет]:
 ```
 
-Пустой Enter оставляет период `1h`. Поддерживаются минуты, часы и дни:
+Скрипт:
+
+- проверяет Caddy и `/etc/caddy/Caddyfile`;
+- находит ровно один site block по введённому адресу;
+- сохраняет резервную копию Caddyfile;
+- добавляет в выбранный site block управляемый JSON access log;
+- проверяет конфигурацию через `caddy validate`;
+- применяет её через graceful reload;
+- устанавливает CrowdSec и коллекции Linux, SSH и Caddy;
+- создаёт acquisition для selfsteal access log;
+- добавляет IP текущего SSH-подключения и указанные IP в AllowList;
+- устанавливает firewall bouncer для SSH- и HTTP-решений;
+- проверяет CrowdSec, Caddy, bouncer и состояние пакетной базы.
+
+### Управляемый Caddy log
+
+В выбранный site block добавляется блок между маркерами:
+
+```caddyfile
+# BEGIN CROWDSEC VLESS SELFSTEAL LOG
+log crowdsec_selfsteal {
+    output file /var/log/caddy/selfsteal-access.log {
+        mode 0640
+        roll_size 50MiB
+        roll_keep 10
+        roll_keep_for 720h
+    }
+    format json
+}
+# END CROWDSEC VLESS SELFSTEAL LOG
+```
+
+При повторном запуске этот блок заменяется, а не дублируется.
+
+Acquisition создаётся в:
 
 ```text
-30m
-1h
-6h
-1d
+/etc/crowdsec/acquis.d/caddy-selfsteal.yaml
 ```
 
-Минимальный период — `5m`. Выбранное значение записывается в systemd timer:
+Резервные копии Caddyfile сохраняются в:
 
 ```text
-/etc/systemd/system/cdn-trusted-proxies.timer
-```
-
-Проверить расписание:
-
-```bash
-systemctl list-timers cdn-trusted-proxies.timer --all
-systemctl cat cdn-trusted-proxies.timer
+/var/lib/crowdsec/vless-selfsteal-backups/
 ```
 
 ## CrowdSec Local API
 
-По умолчанию CrowdSec использует `127.0.0.1:8080`. Установщик переносит Local API на:
+Для обоих профилей Local API переносится на редкий loopback-порт:
 
 ```text
 http://127.0.0.1:18888/
 ```
 
-Меняются одновременно:
+Синхронно обновляются:
 
 ```text
 /etc/crowdsec/config.yaml
@@ -98,120 +109,52 @@ http://127.0.0.1:18888/
 /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
 ```
 
-Порт остаётся доступным только через loopback и не открывается наружу. Перед изменением установщик:
-
-- проверяет, что `127.0.0.1:18888` свободен;
-- сохраняет резервные копии конфигурации;
-- перезапускает CrowdSec;
-- проверяет Local API через `cscli`;
-- откатывает настройки при ошибке.
-
-Для ручного выбора другого локального порта:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/main/install.sh \
-  | sudo CROWDSEC_LAPI_PORT=18889 sh
-```
+Перед изменениями создаются резервные копии. При неудачном запуске CrowdSec настройки LAPI откатываются.
 
 ## Firewall bouncer
 
-После настройки CDN установщик проверяет вывод:
+Backend определяется автоматически:
 
 ```bash
 iptables -V
 ```
 
-Если вывод содержит `nf_tables`, устанавливается:
+- при наличии `nf_tables` используется `crowdsec-firewall-bouncer-nftables`;
+- иначе используется `crowdsec-firewall-bouncer-iptables`.
+
+Профили решений:
 
 ```text
-crowdsec-firewall-bouncer-nftables
+CDN Origin          → ssh
+VLESS + selfsteal   → ssh, http
 ```
 
-Иначе устанавливается:
+Для nftables используется входящий hook `input`. IPv4 и IPv6 остаются включёнными.
 
-```text
-crowdsec-firewall-bouncer-iptables
-```
+Повторная установка безопасна: новый API-ключ и `.yaml.local` создаются до обновления пакета. Если пакетный `postinst` прерывает `dpkg`, установщик запускает восстановление через `dpkg --configure -a` и при необходимости `apt-get -f install`.
 
-Конфигурация хранится в:
+## CrowdSec Console
 
-```text
-/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
-```
-
-Для CDN-origin bouncer получает только решения сценариев, содержащих `ssh`. HTTP-алерты CrowdSec не превращаются в глобальную firewall-блокировку CDN edge. В режиме nftables используется только hook `input`.
-
-## Подключение к CrowdSec Console
-
-После установки bouncer мастер спросит:
+После установки мастер спрашивает:
 
 ```text
 Подключить CrowdSec к панели app.crowdsec.net? [Y/n]:
 ```
 
-Enter означает `yes`.
-
-Enrollment key нужно скопировать в CrowdSec Console:
-
-```text
-Security Engines → Add Security Engine
-```
-
-Ключ вводится скрыто. Установщик выполняет:
-
-```bash
-cscli console enroll ENROLL_KEY
-```
-
-Затем нужно открыть появившийся Security Engine в панели и нажать `Accept enroll`. После подтверждения вернитесь в терминал и нажмите Enter — установщик перезапустит CrowdSec.
-
-## Настройка Caddy
-
-Добавьте в глобальный блок `/etc/caddy/Caddyfile`:
-
-```caddyfile
-{
-    admin 127.0.0.1:2019
-
-    servers {
-        import /etc/caddy/trusted-proxies.caddy
-        trusted_proxies_strict
-        client_ip_headers X-Forwarded-For
-    }
-}
-```
-
-Для VPN/XHTTP endpoint добавьте `log_skip`:
-
-```caddyfile
-handle @tunnel {
-    log_skip
-    reverse_proxy 127.0.0.1:7443
-}
-```
-
-Проверка и graceful reload:
-
-```bash
-caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-systemctl reload caddy
-```
+Enrollment key вводится скрыто. После `Accept enroll` установщик перезапускает CrowdSec и firewall bouncer.
 
 ## Проверки
 
 ```bash
 systemctl status crowdsec --no-pager -l
 systemctl status crowdsec-firewall-bouncer --no-pager -l
-systemctl status cdn-trusted-proxies.timer --no-pager -l
-systemctl list-timers cdn-trusted-proxies.timer --all
-grep -n 'listen_uri' /etc/crowdsec/config.yaml
-grep -n '^url:' /etc/crowdsec/local_api_credentials.yaml
-grep -n '^api_url:' /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
-ss -lntp | grep ':18888'
+systemctl status caddy --no-pager -l
+cscli metrics show acquisition
+cscli metrics show bouncers
 cscli bouncers list
+cscli capi status
 cscli console status
-cscli metrics
-cscli allowlists list
+dpkg --audit
 ```
 
 Для nftables:
@@ -221,14 +164,7 @@ nft list table ip crowdsec
 nft list table ip6 crowdsec6
 ```
 
-Списки CDN:
-
-```bash
-ls -l /etc/caddy/trusted-proxies.d/
-wc -l /etc/caddy/trusted-proxies.d/*.cidr
-```
-
-При повторном запуске отключённый провайдер удаляется из активного набора, а общий `trusted-proxies.caddy` перестраивается только из выбранных источников.
+У рабочего bouncer должны быть `Valid: ✔` и свежее значение `Last API pull`.
 
 ## Закрепление версии
 

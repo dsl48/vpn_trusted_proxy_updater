@@ -33,6 +33,18 @@ printf '%s\n' "[bootstrap] Загружаю установщик из ${REPO}@${
 curl -fsSL --retry 3 --connect-timeout 15 "$URL" -o "$TMP"
 chmod 0700 "$TMP"
 
+# Вопросы выбора CDN отображаются как [Y/n]. Пустой Enter означает yes.
+# Патч применяется к загруженному установщику, чтобы поведение было одинаковым
+# при запуске main, тега или ранее закреплённого ref.
+sed -i \
+  -e 's/\$prompt \[да\/нет\]: /\$prompt [Y\/n]: /' \
+  -e '/read -r -p "\$prompt \[Y\/n\]: " answer/a\
+    [ -n "$answer" ] || answer=yes' \
+  -e 's/да|д|yes|y)/yes|y)/' \
+  -e 's/нет|н|no|n)/no|n)/' \
+  -e 's/Введите «да» или «нет»\./Введите yes или no./' \
+  "$TMP"
+
 if [ ! -r /dev/tty ]; then
   echo "ERROR: нужен интерактивный терминал /dev/tty" >&2
   exit 1

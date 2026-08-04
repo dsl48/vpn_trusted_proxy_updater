@@ -102,8 +102,72 @@ case "$PROFILE" in
 
   vless-selfsteal)
     download install-vless-selfsteal.sh
+    download detect-selfsteal-site.py
 
+    python3 - "$TMP_DIR/install-vless-selfsteal.sh" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding='utf-8')
+
+old_prompt = '''printf '\\nУстановка CrowdSec для прямой ноды VLESS + selfsteal на Caddy.\\n'
+printf 'Укажите адрес сайта из заголовка site block в выбранном Caddyfile.\\n'
+read -r -p "Домен/адрес selfsteal-сайта: " SELFSTEAL_SITE
+SELFSTEAL_SITE="$(printf '%s' "$SELFSTEAL_SITE" | tr -d '[:space:]')"
+[[ -n "$SELFSTEAL_SITE" ]] || die "Домен/адрес selfsteal-сайта не задан"
+'''
+new_prompt = '''printf '\\nУстановка CrowdSec для прямой ноды VLESS + selfsteal на Caddy.\\n'
+[[ -x "$CADDY_SELFSTEAL_DETECTOR" ]] || die "Не найден модуль определения selfsteal-блока"
+AUTO_SELFSTEAL_SITE="$("$CADDY_SELFSTEAL_DETECTOR" "$CADDYFILE" 2>/dev/null || true)"
+if [[ -n "$AUTO_SELFSTEAL_SITE" ]]; then
+  SELFSTEAL_SITE="$AUTO_SELFSTEAL_SITE"
+  log "Обнаружен стандартный selfsteal HTTPS-блок: $SELFSTEAL_SITE"
+else
+  printf 'Стандартный selfsteal-блок с переменной не найден однозначно.\\n'
+  printf 'Укажите адрес точно так, как он написан в заголовке site block.\\n'
+  read -r -p "Домен/адрес selfsteal-сайта: " SELFSTEAL_SITE
+  SELFSTEAL_SITE="$(printf '%s' "$SELFSTEAL_SITE" | tr -d '[:space:]')"
+  [[ -n "$SELFSTEAL_SITE" ]] || die "Домен/адрес selfsteal-сайта не задан"
+fi
+'''
+if text.count(old_prompt) != 1:
+    raise SystemExit('Не найден ожидаемый блок запроса selfsteal-сайта')
+text = text.replace(old_prompt, new_prompt, 1)
+
+old_header = "header = line.split('{', 1)[0].strip()"
+new_header = "header = line.rsplit('{', 1)[0].strip()"
+if text.count(old_header) != 1:
+    raise SystemExit('Не найден ожидаемый парсер заголовка Caddy site block')
+text = text.replace(old_header, new_header, 1)
+
+needle = '''if len(blocks) != 1:
+    raise SystemExit(
+'''
+replacement = '''if len(blocks) > 1:
+    structured = []
+    for block_start, block_end in blocks:
+        body = ''.join(lines[block_start + 1:block_end])
+        if (re.search(r'(?m)^\\s*bind\\s+unix/', body)
+                and re.search(r'(?m)^\\s*file_server(?:\\s|$)', body)):
+            structured.append((block_start, block_end))
+    if len(structured) == 1:
+        blocks = structured
+
+if len(blocks) != 1:
+    raise SystemExit(
+'''
+if text.count(needle) != 1:
+    raise SystemExit('Не найдена ожидаемая проверка количества Caddy site blocks')
+text = text.replace(needle, replacement, 1)
+
+path.write_text(text, encoding='utf-8')
+PY
+
+    export CADDY_SELFSTEAL_DETECTOR="$TMP_DIR/detect-selfsteal-site.py"
     run_tty "$TMP_DIR/install-vless-selfsteal.sh"
+    unset CADDY_SELFSTEAL_DETECTOR
+
     CROWDSEC_INSTALL_PROFILE=vless-selfsteal \
       run_tty "$TMP_DIR/install-firewall-console.sh"
     CROWDSEC_BOUNCER_NAME=vless-selfsteal-firewall-bouncer \

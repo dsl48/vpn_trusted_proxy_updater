@@ -12,6 +12,15 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def replace_optional_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count == 0:
+        return text
+    if count != 1:
+        raise SystemExit(f"{label}: ожидалось не более одного совпадения, найдено {count}")
+    return text.replace(old, new, 1)
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: patch-baseline-security.py FILE", file=sys.stderr)
@@ -222,9 +231,17 @@ managed_set_sysctl_option() {
 '''
     text = replace_once(text, old_verify, new_verify, "итоговая проверка sysctl")
 
-    old_rollback_ifs = r'''while IFS=\t read -r key value; do sysctl -w "\$key=\$value" >/dev/null 2>&1 || true; done <"$tx/runtime.before"'''
-    new_rollback_ifs = r'''while IFS=\$'\\t' read -r key value; do sysctl -w "\$key=\$value" >/dev/null 2>&1 || true; done <"$tx/runtime.before"'''
-    text = replace_once(text, old_rollback_ifs, new_rollback_ifs, "разделитель rollback sysctl")
+    # В разных версиях основы эта строка может содержать literal "\\t",
+    # фактическую табуляцию или уже исправленный $'\\t'. Исправляем только
+    # найденный старый вариант и не считаем отсутствие совпадения ошибкой.
+    old_rollback_prefix = r'''while IFS=\t read -r key value; do'''
+    new_rollback_prefix = r'''while IFS=\$'\t' read -r key value; do'''
+    text = replace_optional_once(
+        text,
+        old_rollback_prefix,
+        new_rollback_prefix,
+        "разделитель rollback sysctl",
+    )
 
     path.write_text(text, encoding="utf-8")
     return 0

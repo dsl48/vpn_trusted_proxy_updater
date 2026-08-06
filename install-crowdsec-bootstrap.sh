@@ -55,6 +55,65 @@ if audit_start < 0 or profile_start < 0:
     raise SystemExit("Не удалось отделить audit-ветку CrowdSec bootstrap")
 text = text[:audit_start] + text[profile_start:]
 
+text = text.replace(
+    "printf '  1 — Панель управления (пока не реализовано)\\n' >/dev/tty",
+    "printf '  1 — Панель Remnawave + Caddy\\n' >/dev/tty",
+    1,
+)
+
+old_panel_choice = '''    1|panel)
+      printf '\\nУстановка на панель управления пока не реализована.\\n' >/dev/tty
+      exit 0
+      ;;
+'''
+new_panel_choice = '''    1|panel|remnawave-panel)
+      PROFILE="remnawave-panel"
+      break
+      ;;
+'''
+if text.count(old_panel_choice) != 1:
+    raise SystemExit("Не найден старый пункт панели CrowdSec")
+text = text.replace(old_panel_choice, new_panel_choice, 1)
+
+case_marker = '''case "$PROFILE" in
+  cdn-origin)
+'''
+panel_case = '''case "$PROFILE" in
+  remnawave-panel)
+    download install-crowdsec-remnawave-panel.sh
+    download patch-firewall-console-remnawave.py
+
+    run_tty "$TMP_DIR/install-crowdsec-remnawave-panel.sh"
+
+    PANEL_PROFILE_STATE=/etc/crowdsec/remnawave-panel-profile.env
+    [ -f "$PANEL_PROFILE_STATE" ] || {
+      echo "ERROR: профиль панели не создал $PANEL_PROFILE_STATE" >&2
+      exit 1
+    }
+    . "$PANEL_PROFILE_STATE"
+    : "${CROWDSEC_PANEL_TRAFFIC_MODE:?Не определён режим трафика панели}"
+
+    python3 "$TMP_DIR/patch-firewall-console-remnawave.py" \\
+      "$TMP_DIR/install-firewall-console.sh"
+    /bin/bash -n "$TMP_DIR/install-firewall-console.sh"
+
+    export CROWDSEC_INSTALL_PROFILE=remnawave-panel
+    export CROWDSEC_PANEL_TRAFFIC_MODE
+    run_tty "$TMP_DIR/install-firewall-console.sh"
+    unset CROWDSEC_INSTALL_PROFILE
+
+    CROWDSEC_BOUNCER_NAME=remnawave-panel-firewall-bouncer \\
+      run_tty "$TMP_DIR/cleanup-default-bouncer-registrations.sh"
+    CROWDSEC_BOUNCER_NAME=remnawave-panel-firewall-bouncer \\
+      run_tty "$TMP_DIR/verify-remediation-component.sh"
+    ;;
+
+  cdn-origin)
+'''
+if text.count(case_marker) != 1:
+    raise SystemExit("Не найден case профилей CrowdSec")
+text = text.replace(case_marker, panel_case, 1)
+
 target.write_text(text, encoding="utf-8")
 PY
 

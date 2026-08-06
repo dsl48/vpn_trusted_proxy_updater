@@ -39,6 +39,13 @@ jobs:
           cat crowdsec-remnawave-panel/part-*.sh.inc > /tmp/remnawave-panel.sh
           /bin/bash -n /tmp/remnawave-panel.sh
 
+      - name: Test generated CrowdSec bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env CROWDSEC_BOOTSTRAP_TEST_ONLY=1 \
+            /bin/bash ./install-crowdsec-bootstrap.sh
+
       - name: Compile Python files
         shell: bash
         run: |

@@ -142,5 +142,10 @@ PY
 chmod 0700 "$PATCHED"
 /bin/sh -n "$PATCHED"
 
+if [[ "${CROWDSEC_BOOTSTRAP_TEST_ONLY:-0}" == 1 ]]; then
+  printf 'CrowdSec bootstrap generated and validated successfully.\n'
+  exit 0
+fi
+
 printf '\nОткрываю установку CrowdSec. После её завершения вы вернётесь в главное меню.\n'
 VPN_INSTALL_REF="${VPN_INSTALL_REF:-main}" /bin/sh "$PATCHED"

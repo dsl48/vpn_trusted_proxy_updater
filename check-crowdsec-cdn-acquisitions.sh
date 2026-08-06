@@ -8,8 +8,14 @@ critical() { printf '[CRITICAL] %s\n' "$*"; }
 
 printf '\n=== CrowdSec: acquisition для CDN Origin ===\n'
 
+if [[ ! -f /etc/cdn-trusted-proxies.conf && \
+      ! -d /etc/caddy/trusted-proxies.d ]]; then
+  info 'Признаки профиля CDN Origin не найдены — проверка пропущена'
+  exit 0
+fi
+
 if ! command -v cscli >/dev/null 2>&1 || [[ ! -d /etc/crowdsec ]]; then
-  info 'CrowdSec не установлен — профиль acquisition не проверяется'
+  critical 'Профиль CDN Origin найден, но CrowdSec не установлен'
   exit 0
 fi
 

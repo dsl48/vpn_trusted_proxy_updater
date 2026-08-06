@@ -2,7 +2,13 @@ name: Project checks
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+concurrency:
+  group: project-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

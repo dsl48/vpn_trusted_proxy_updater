@@ -25,7 +25,59 @@ if [ -z "${SSH_CONNECTION:-}" ] && [ -n "${SSH_CLIENT:-}" ]; then
 fi
 export SSH_CONNECTION="${SSH_CONNECTION:-}"
 
-printf '\nКуда устанавливается CrowdSec?\n' >/dev/tty
+printf '\nПроверка и защита сервера\n' >/dev/tty
+printf '  1 — Проверка базовой безопасности\n' >/dev/tty
+printf '  2 — Установить базовые средства защиты\n' >/dev/tty
+printf '  0 — Выход\n' >/dev/tty
+
+while :; do
+  printf 'Выберите действие [1]: ' >/dev/tty
+  IFS= read -r MAIN_ACTION </dev/tty
+  MAIN_ACTION="${MAIN_ACTION:-1}"
+  case "$MAIN_ACTION" in
+    1|check|audit)
+      MODE="audit"
+      break
+      ;;
+    2|install|protect)
+      MODE="install"
+      break
+      ;;
+    0|exit|quit)
+      printf 'Выход.\n' >/dev/tty
+      exit 0
+      ;;
+    *)
+      printf 'Введите 0, 1 или 2.\n' >/dev/tty
+      ;;
+  esac
+done
+
+TMP_DIR="$(mktemp -d /tmp/server-security.XXXXXX)"
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT HUP INT TERM
+
+download() {
+  name="$1"
+  printf '%s\n' "[bootstrap] Загружаю $name из ${REPO}@${REF}"
+  curl -fsSL --retry 3 --connect-timeout 15 \
+    "$BASE_URL/$name" -o "$TMP_DIR/$name"
+  chmod 0700 "$TMP_DIR/$name"
+}
+
+run_tty() {
+  /bin/bash "$1" </dev/tty >/dev/tty 2>&1
+}
+
+if [ "$MODE" = "audit" ]; then
+  download check-basic-security.sh
+  run_tty "$TMP_DIR/check-basic-security.sh"
+  exit 0
+fi
+
+printf '\nКуда устанавливаются базовые средства защиты?\n' >/dev/tty
 printf '  1 — Панель управления (пока не реализовано)\n' >/dev/tty
 printf '  2 — Нода CDN Origin\n' >/dev/tty
 printf '  3 — Нода VLESS + selfsteal на Caddy\n' >/dev/tty
@@ -52,24 +104,6 @@ while :; do
       ;;
   esac
 done
-
-TMP_DIR="$(mktemp -d /tmp/crowdsec-installer.XXXXXX)"
-cleanup() {
-  rm -rf "$TMP_DIR"
-}
-trap cleanup EXIT HUP INT TERM
-
-download() {
-  name="$1"
-  printf '%s\n' "[bootstrap] Загружаю $name из ${REPO}@${REF}"
-  curl -fsSL --retry 3 --connect-timeout 15 \
-    "$BASE_URL/$name" -o "$TMP_DIR/$name"
-  chmod 0700 "$TMP_DIR/$name"
-}
-
-run_tty() {
-  /bin/bash "$1" </dev/tty >/dev/tty 2>&1
-}
 
 download install-firewall-console.sh
 download cleanup-default-bouncer-registrations.sh
@@ -104,6 +138,11 @@ case "$PROFILE" in
     download install-vless-selfsteal.sh
     download detect-selfsteal-site.py
     download patch-vless-docker-reload.py
+
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "ERROR: для профиля VLESS + selfsteal требуется python3" >&2
+      exit 1
+    fi
 
     python3 - "$TMP_DIR/install-vless-selfsteal.sh" <<'PY'
 import pathlib

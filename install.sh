@@ -73,7 +73,9 @@ run_tty() {
 
 if [ "$MODE" = "audit" ]; then
   download check-basic-security.sh
-  run_tty "$TMP_DIR/check-basic-security.sh"
+  download check-basic-security-extended.sh
+  /bin/bash "$TMP_DIR/check-basic-security-extended.sh" \
+    "$TMP_DIR/check-basic-security.sh" </dev/tty >/dev/tty 2>&1
   exit 0
 fi
 

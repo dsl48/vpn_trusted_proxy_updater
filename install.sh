@@ -83,14 +83,7 @@ run_audit() {
 }
 
 run_baseline_install() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    printf '\nERROR: для безопасного запуска базового мастера требуется python3.\n' >/dev/tty
-    return 1
-  fi
   download install-baseline-security.sh
-  download patch-baseline-security.py
-  python3 "$TMP_DIR/patch-baseline-security.py" \
-    "$TMP_DIR/install-baseline-security.sh"
   /bin/bash -n "$TMP_DIR/install-baseline-security.sh"
   run_tty "$TMP_DIR/install-baseline-security.sh"
 }

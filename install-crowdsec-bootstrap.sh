@@ -114,6 +114,28 @@ if text.count(case_marker) != 1:
     raise SystemExit("Не найден case профилей CrowdSec")
 text = text.replace(case_marker, panel_case, 1)
 
+cdn_download_marker = '''    download install-crowdsec-cdn-origin.sh
+    download configure-update-interval.sh
+'''
+cdn_download_replacement = '''    download install-crowdsec-cdn-origin.sh
+    download configure-crowdsec-cdn-acquisitions.sh
+    download configure-update-interval.sh
+'''
+if text.count(cdn_download_marker) != 1:
+    raise SystemExit("Не найден список загрузок профиля CDN Origin")
+text = text.replace(cdn_download_marker, cdn_download_replacement, 1)
+
+cdn_run_marker = '''    run_tty "$TMP_DIR/install-crowdsec-cdn-origin.sh"
+    run_tty "$TMP_DIR/configure-update-interval.sh"
+'''
+cdn_run_replacement = '''    run_tty "$TMP_DIR/install-crowdsec-cdn-origin.sh"
+    run_tty "$TMP_DIR/configure-crowdsec-cdn-acquisitions.sh"
+    run_tty "$TMP_DIR/configure-update-interval.sh"
+'''
+if text.count(cdn_run_marker) != 1:
+    raise SystemExit("Не найден порядок запуска профиля CDN Origin")
+text = text.replace(cdn_run_marker, cdn_run_replacement, 1)
+
 target.write_text(text, encoding="utf-8")
 PY
 

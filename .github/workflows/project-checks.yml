@@ -17,12 +17,18 @@ jobs:
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           git init .
           git remote add origin "https://github.com/${REPOSITORY}.git"
-          git fetch --depth=1 origin "$COMMIT_SHA"
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            git fetch --depth=1 origin "refs/pull/${PR_NUMBER}/merge"
+          else
+            git fetch --depth=1 origin "$COMMIT_SHA"
+          fi
           git checkout --detach FETCH_HEAD
 
       - name: Install ShellCheck

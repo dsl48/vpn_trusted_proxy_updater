@@ -101,33 +101,75 @@ case "${log_answer,,}" in
   y|yes|д|да) TG_ARGS+=(--enable-logging) ;;
 esac
 
-"$TG_BIN" "${TG_ARGS[@]}"
+if ! "$TG_BIN" "${TG_ARGS[@]}"; then
+  echo "ERROR: команда traffic-guard full завершилась с ошибкой" >&2
+  exit 1
+fi
 
 command -v ipset >/dev/null 2>&1 || {
   echo "ERROR: ipset не найден после применения TrafficGuard" >&2
   exit 1
 }
+command -v iptables >/dev/null 2>&1 || {
+  echo "ERROR: iptables не найден после применения TrafficGuard" >&2
+  exit 1
+}
 
-V4_ENTRIES="$(ipset list SCANNERS-BLOCK-V4 2>/dev/null | awk '/^Number of entries:/ {print $4; exit}')"
-V6_ENTRIES="$(ipset list SCANNERS-BLOCK-V6 2>/dev/null | awk '/^Number of entries:/ {print $4; exit}')"
+# Не завершаем awk после первого совпадения: при pipefail это могло
+# приводить к SIGPIPE у ipset и ложному завершению всего установщика.
+V4_ENTRIES="$(
+  ipset list SCANNERS-BLOCK-V4 2>/dev/null |
+    awk '/^Number of entries:/ {value=$4} END {if (value != "") print value}'
+)"
+V6_ENTRIES="$(
+  ipset list SCANNERS-BLOCK-V6 2>/dev/null |
+    awk '/^Number of entries:/ {value=$4} END {if (value != "") print value}'
+)"
 V4_ENTRIES="${V4_ENTRIES:-0}"
 V6_ENTRIES="${V6_ENTRIES:-0}"
+
+[[ "$V4_ENTRIES" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: не удалось определить число IPv4-сетей TrafficGuard" >&2
+  exit 1
+}
+[[ "$V6_ENTRIES" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: не удалось определить число IPv6-сетей TrafficGuard" >&2
+  exit 1
+}
 
 if (( V4_ENTRIES == 0 && V6_ENTRIES == 0 )); then
   echo "ERROR: списки TrafficGuard созданы, но не содержат сетей" >&2
   exit 1
 fi
 
-if ! iptables -S SCANNERS-BLOCK 2>/dev/null | \
-     grep -q -- '--match-set SCANNERS-BLOCK-V4 src -j DROP'; then
+echo "[CHECK] ipset заполнены: IPv4=$V4_ENTRIES, IPv6=$V6_ENTRIES"
+
+SCANNERS_V4_RULES="$(iptables -S SCANNERS-BLOCK 2>/dev/null || true)"
+INPUT_RULES="$(iptables -S INPUT 2>/dev/null || true)"
+UFW_INPUT_RULES="$(iptables -S ufw-before-input 2>/dev/null || true)"
+
+if ! grep -Fq -- '--match-set SCANNERS-BLOCK-V4 src -j DROP' <<<"$SCANNERS_V4_RULES"; then
   echo "ERROR: не найдено IPv4 DROP-правило TrafficGuard" >&2
   exit 1
 fi
 
-if ! iptables -S INPUT 2>/dev/null | grep -q -- '-j SCANNERS-BLOCK' && \
-   ! iptables -S ufw-before-input 2>/dev/null | grep -q -- '-j SCANNERS-BLOCK'; then
-  echo "ERROR: цепочка SCANNERS-BLOCK не подключена к входящему трафику" >&2
+echo "[CHECK] IPv4 DROP-правило SCANNERS-BLOCK найдено"
+
+if ! grep -Fq -- '-j SCANNERS-BLOCK' <<<"$INPUT_RULES" &&
+   ! grep -Fq -- '-j SCANNERS-BLOCK' <<<"$UFW_INPUT_RULES"; then
+  echo "ERROR: цепочка SCANNERS-BLOCK не подключена к INPUT или ufw-before-input" >&2
   exit 1
+fi
+
+echo "[CHECK] Цепочка SCANNERS-BLOCK подключена к входящему трафику"
+
+if (( V6_ENTRIES > 0 )) && command -v ip6tables >/dev/null 2>&1; then
+  SCANNERS_V6_RULES="$(ip6tables -S SCANNERS-BLOCK 2>/dev/null || true)"
+  if ! grep -Fq -- '--match-set SCANNERS-BLOCK-V6 src -j DROP' <<<"$SCANNERS_V6_RULES"; then
+    echo "ERROR: IPv6-сети загружены, но IPv6 DROP-правило TrafficGuard не найдено" >&2
+    exit 1
+  fi
+  echo "[CHECK] IPv6 DROP-правило SCANNERS-BLOCK найдено"
 fi
 
 cat <<RESULT

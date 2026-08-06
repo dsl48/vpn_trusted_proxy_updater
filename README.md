@@ -33,6 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 ```text
 check-basic-security.sh
 check-basic-security-extended.sh
+check-crowdsec-cdn-acquisitions.sh
 ```
 
 Она работает только в режиме чтения и проверяет:
@@ -42,6 +43,7 @@ check-basic-security-extended.sh
 - публичные listeners;
 - firewall, ping и базовые `sysctl`;
 - CrowdSec и firewall bouncer;
+- acquisition-схему CrowdSec на CDN Origin;
 - Fail2Ban;
 - TrafficGuard и фактическое заполнение ipset;
 - Docker и профильное исключение для `remnawave-node-agent`;
@@ -182,11 +184,28 @@ crowdsec-remnawave-panel/
 Сценарий:
 
 - настраивает доверенные диапазоны Яндекс CDN и/или Билайн CDN;
+- создаёт единый file acquisition `/var/log/caddy/access.log` с `type: caddy`;
+- отключает generated `setup.caddy.yaml`, чтобы operational journal Caddy не анализировался как access log;
+- отключает generated `setup.linux.yaml`, потому что `/var/log/syslog` или `/var/log/messages` могут повторно содержать те же сообщения Caddy;
+- сохраняет отключённые acquisition-файлы в `/var/lib/crowdsec/cdn-origin-acquisition-backups/`;
+- оставляет отдельный SSH acquisition;
 - создаёт CrowdSec AllowList для CDN и администратора;
+- автоматически синхронизирует AllowList при изменении CDN-диапазонов через `crowdsec-cdn-allowlist-sync.path`;
 - устанавливает firewall bouncer;
 - применяет через firewall только SSH-решения;
 - опционально подключает CrowdSec Console;
 - проверяет remediation component.
+
+Причина отдельной acquisition-схемы: `log_skip` исключает VPN/XHTTP route только из access log. Внутренние сообщения `http.handlers.reverse_proxy` продолжают попадать в journald и могут содержать URI туннельной сессии. Поэтому CrowdSec на CDN Origin должен читать Caddy только из управляемого JSON access log.
+
+Управляемые файлы и units:
+
+```text
+/etc/crowdsec/acquis.d/caddy.yaml
+/usr/local/sbin/sync-crowdsec-cdn-allowlist
+/etc/systemd/system/crowdsec-cdn-allowlist-sync.service
+/etc/systemd/system/crowdsec-cdn-allowlist-sync.path
+```
 
 ### VLESS + selfsteal
 

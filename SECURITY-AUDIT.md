@@ -2,6 +2,8 @@
 
 Расширение `check-basic-security-extended.sh` запускается основным `install.sh` поверх базового read-only аудита. Оно не меняет firewall, ipset, systemd, Docker, CrowdSec, Fail2Ban или TrafficGuard.
 
+После общего аудита запускается отдельная read-only проверка `check-crowdsec-cdn-acquisitions.sh`. Она активируется только при наличии признаков профиля CDN Origin.
+
 ## Сетевые listeners
 
 Публичность определяется только по колонке `Local Address:Port` вывода `ss -H -lntup`.
@@ -22,6 +24,30 @@ CrowdSec LAPI получает:
 [OK]       при bind на 127.0.0.0/8 или ::1
 [CRITICAL] при bind на любом не-loopback адресе
 ```
+
+## CrowdSec acquisition для CDN Origin
+
+Для CDN Origin ожидается строго следующая схема:
+
+```text
+/var/log/caddy/access.log -> type: caddy -> CrowdSec
+journalctl caddy.service  -> не подключён
+/var/log/syslog           -> не подключён общим acquisition
+/var/log/messages         -> не подключён общим acquisition
+```
+
+Причина: `log_skip` отключает только access log выбранного Caddy route. Operational log `http.handlers.reverse_proxy` продолжает поступать в journald и может содержать URI XHTTP-сессии. На системах с rsyslog те же сообщения дополнительно копируются в `/var/log/syslog`.
+
+Проверка выводит:
+
+- `[OK]`, когда `/var/log/caddy/access.log` читается ровно одним acquisition;
+- `[CRITICAL]`, если CrowdSec читает `journalctl` с `_SYSTEMD_UNIT=caddy.service`;
+- `[WARN]`, если подключён общий `/var/log/syslog` или `/var/log/messages`;
+- состояние `crowdsec-cdn-allowlist-sync.path`;
+- наличие `/usr/local/sbin/sync-crowdsec-cdn-allowlist`;
+- фактические runtime-источники из `cscli metrics show acquisition`.
+
+VPN/XHTTP routes должны содержать `log_skip`, поэтому их запросы не должны попадать в `/var/log/caddy/access.log`.
 
 ## Fail2Ban
 

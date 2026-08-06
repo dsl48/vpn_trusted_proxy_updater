@@ -28,6 +28,7 @@ trap cleanup EXIT HUP INT TERM
 
 PAYLOAD="$TMP_DIR/install-remnawave-panel.sh"
 PATCHER="$TMP_DIR/patch-remnawave-panel-caddy-runtime.py"
+ERREXIT_PATCHER="$TMP_DIR/patch-remnawave-panel-caddy-errexit.py"
 : >"$PAYLOAD"
 for part in 00 01 02 03 04 05; do
   printf '[bootstrap] Загружаю профиль панели: part-%s\n' "$part"
@@ -39,8 +40,13 @@ printf '[bootstrap] Загружаю модуль определения Caddy r
 curl -fsSL --retry 3 --connect-timeout 15 \
   "$ROOT_BASE_URL/patch-remnawave-panel-caddy-runtime.py" \
   -o "$PATCHER"
-chmod 0700 "$PAYLOAD" "$PATCHER"
+printf '[bootstrap] Загружаю исправление обработки Docker Caddy\n'
+curl -fsSL --retry 3 --connect-timeout 15 \
+  "$ROOT_BASE_URL/patch-remnawave-panel-caddy-errexit.py" \
+  -o "$ERREXIT_PATCHER"
+chmod 0700 "$PAYLOAD" "$PATCHER" "$ERREXIT_PATCHER"
 python3 "$PATCHER" "$PAYLOAD"
+python3 "$ERREXIT_PATCHER" "$PAYLOAD"
 /bin/bash -n "$PAYLOAD"
 
 printf '[bootstrap] Профиль Remnawave Panel собран и проверен\n'

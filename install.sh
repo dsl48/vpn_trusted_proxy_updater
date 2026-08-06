@@ -60,7 +60,8 @@ show_menu() {
       Read-only аудит ОС, SSH, сети, firewall, Docker и средств защиты.
 
   2 — Установка базовых настроек безопасности
-      Усиление ОС, SSH, sysctl, firewall и автоматических обновлений.
+      Интерактивное усиление SSH, sysctl, ping, обновлений и журналов
+      с backup и автоматическим откатом опасных изменений.
 
   3 — Установка TrafficGuard
       Отсекает известные сети сканеров на уровне iptables/ipset,
@@ -82,13 +83,8 @@ run_audit() {
 }
 
 run_baseline_install() {
-  cat >/dev/tty <<'MESSAGE'
-
-Установка базовых настроек безопасности пока не включена.
-Этот пункт будет настраивать SSH, sysctl, firewall и автоматические
-обновления только после утверждения безопасного профиля для VPN-нод.
-Никаких изменений в систему не внесено.
-MESSAGE
+  download install-baseline-security.sh
+  run_tty "$TMP_DIR/install-baseline-security.sh"
 }
 
 run_traffic_guard_install() {
@@ -115,7 +111,9 @@ while :; do
       pause_menu
       ;;
     2|baseline|basic)
-      run_baseline_install
+      if ! run_baseline_install; then
+        printf '\nУстановка базовых настроек завершилась с ошибкой.\n' >/dev/tty
+      fi
       pause_menu
       ;;
     3|traffic-guard|trafficguard)

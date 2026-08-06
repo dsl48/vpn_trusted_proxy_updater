@@ -10,34 +10,138 @@ else
 fi
 
 ENV_FILE="/opt/remnawave/.env"
+CADDY_ENV_FILE="/opt/remnawave/caddy/.env"
 PANEL_DOMAIN=""
-if [[ -f "$ENV_FILE" ]]; then
-  PANEL_DOMAIN="$(python3 - "$ENV_FILE" <<'PY'
+PANEL_DOMAIN_SOURCE=""
+
+normalize_panel_domain() {
+  python3 - "$1" <<'PY'
+import re
+import sys
+from urllib.parse import urlsplit
+
+raw = sys.argv[1].strip()
+if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+    raw = raw[1:-1].strip()
+if not raw or raw == "*" or any(token in raw for token in ("${", "{$", "$(")):
+    raise SystemExit(1)
+
+candidate = raw if "://" in raw else "//" + raw
+try:
+    parsed = urlsplit(candidate)
+    host = parsed.hostname
+    port = parsed.port
+except ValueError:
+    raise SystemExit(1)
+if not host:
+    raise SystemExit(1)
+
+host = host.rstrip(".").lower()
+try:
+    host = host.encode("idna").decode("ascii")
+except UnicodeError:
+    raise SystemExit(1)
+
+labels = host.split(".")
+if len(labels) < 2:
+    raise SystemExit(1)
+label_re = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+if any(not label_re.fullmatch(label) for label in labels):
+    raise SystemExit(1)
+
+print(host + (f":{port}" if port else ""))
+PY
+}
+
+mapfile -t PANEL_DOMAIN_CANDIDATES < <(
+  python3 - "$ENV_FILE" "$CADDY_ENV_FILE" <<'PY'
+import os
 import pathlib
+import re
 import sys
 
-for raw in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="ignore").splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#") or "=" not in line:
+values = {}
+for filename in sys.argv[1:]:
+    path = pathlib.Path(filename)
+    if not path.is_file():
         continue
-    key, value = line.split("=", 1)
-    if key.strip() == "FRONT_END_DOMAIN":
-        print(value.strip().strip("\"'"))
-        break
+    for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        else:
+            value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+        values[key] = value
+
+pattern = re.compile(
+    r"\{\$([A-Za-z_][A-Za-z0-9_]*)\}"
+    r"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}"
+    r"|\$([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+def expand(value: str) -> str:
+    current = value
+    for _ in range(8):
+        changed = False
+
+        def repl(match):
+            nonlocal changed
+            name = next(group for group in match.groups() if group)
+            replacement = values.get(name, os.environ.get(name))
+            if replacement is None:
+                return match.group(0)
+            changed = True
+            return replacement
+
+        current = pattern.sub(repl, current)
+        if not changed:
+            break
+    return current.strip()
+
+for key in (
+    "PANEL_DOMAIN",
+    "FRONT_END_DOMAIN",
+    "REMNAWAVE_PANEL_DOMAIN",
+    "CADDY_SUB_DOMAIN",
+    "SUB_PUBLIC_DOMAIN",
+):
+    value = values.get(key, "")
+    if value:
+        print(f"{key}\t{expand(value)}")
 PY
-  )"
-fi
-PANEL_DOMAIN="${PANEL_DOMAIN#http://}"
-PANEL_DOMAIN="${PANEL_DOMAIN#https://}"
-PANEL_DOMAIN="${PANEL_DOMAIN%%/*}"
-if [[ -z "$PANEL_DOMAIN" ]]; then
-  read -r -p "Домен панели Remnawave: " PANEL_DOMAIN
-  PANEL_DOMAIN="${PANEL_DOMAIN#http://}"
-  PANEL_DOMAIN="${PANEL_DOMAIN#https://}"
-  PANEL_DOMAIN="${PANEL_DOMAIN%%/*}"
-fi
-[[ "$PANEL_DOMAIN" =~ ^[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || die "некорректный домен панели"
-status OK "Домен панели: $PANEL_DOMAIN"
+)
+
+for candidate_line in "${PANEL_DOMAIN_CANDIDATES[@]}"; do
+  candidate_source="${candidate_line%%$'\t'*}"
+  candidate_value="${candidate_line#*$'\t'}"
+  normalized="$(normalize_panel_domain "$candidate_value" 2>/dev/null || true)"
+  if [[ -n "$normalized" ]]; then
+    PANEL_DOMAIN="$normalized"
+    PANEL_DOMAIN_SOURCE="$candidate_source"
+    break
+  fi
+  status WARN "$candidate_source не удалось использовать как домен панели: $candidate_value"
+done
+
+while [[ -z "$PANEL_DOMAIN" ]]; do
+  read -r -p "Домен панели Remnawave без пути: " panel_domain_input
+  PANEL_DOMAIN="$(normalize_panel_domain "$panel_domain_input" 2>/dev/null || true)"
+  if [[ -z "$PANEL_DOMAIN" ]]; then
+    status INFO "Введите hostname вида panel.example.com; URL https://panel.example.com/ тоже допустим"
+  else
+    PANEL_DOMAIN_SOURCE="ручной ввод"
+  fi
+done
+status OK "Домен панели: $PANEL_DOMAIN (источник: $PANEL_DOMAIN_SOURCE)"
 
 HOST_CADDY=0
 DOCKER_CADDY=0

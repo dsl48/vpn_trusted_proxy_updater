@@ -1,19 +1,6 @@
-# CrowdSec installer for VPN nodes
+# Проверка и базовая защита VPN-серверов
 
-Интерактивный установщик CrowdSec для Caddy-серверов проекта VPN.
-
-## Поддерживаемые профили
-
-При запуске мастер спрашивает, куда выполняется установка:
-
-```text
-Куда устанавливается CrowdSec?
-  1 — Панель управления (пока не реализовано)
-  2 — Нода CDN Origin
-  3 — Нода VLESS + selfsteal на Caddy
-```
-
-Пустой Enter выбирает профиль `CDN Origin`.
+Интерактивный набор скриптов для аудита базовой безопасности и установки CrowdSec-защиты на серверах проекта VPN.
 
 ## Запуск
 
@@ -21,34 +8,189 @@
 curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/main/install.sh | sudo sh
 ```
 
-Для интерактивного режима требуется доступный `/dev/tty`.
+Нужен интерактивный `/dev/tty`. Основной установщик работает на Debian/Ubuntu и должен запускаться от root.
 
-## Профиль CDN Origin
+## Главное меню
 
-Существующий сценарий:
+```text
+Проверка и защита сервера
+  1 — Проверка базовой безопасности
+  2 — Установить базовые средства защиты
+  0 — Выход
+```
 
-- выбор Яндекс CDN, Билайн CDN или обоих провайдеров;
-- получение и регулярное обновление официальных CDN-диапазонов;
-- настройка `trusted_proxies` для Caddy;
-- AllowList для CDN и IP администратора;
-- выбор частоты обновления списков, по умолчанию `1h`;
-- firewall bouncer только для SSH-решений, чтобы HTTP-решение не заблокировало CDN edge;
-- подключение к CrowdSec Console;
-- проверка регистрации remediation component и свежего API pull.
+Пустой Enter выбирает проверку безопасности.
 
-## Профиль VLESS + selfsteal
+# Проверка базовой безопасности
 
-Сценарий предназначен для прямой VLESS-ноды, где Caddy обслуживает selfsteal-сайт.
+Проверка выполняется скриптом `check-basic-security.sh` и работает только в режиме чтения. Она не меняет firewall, SSH, sysctl, пакеты, пользователей, контейнеры и сервисы.
 
-После выбора профиля мастер уточняет, где запущен Caddy:
+Результаты выводятся со статусами:
+
+```text
+[OK]       настройка соответствует базовой рекомендации
+[WARN]     настройку желательно проверить или усилить
+[CRITICAL] обнаружена серьёзная проблема
+[INFO]     справочная информация
+[SKIP]     проверка неприменима или недоступна
+```
+
+В конце выводятся счётчики и общая рекомендация. Скрипт возвращает код `0`, даже если найдены проблемы: результаты аудита не считаются ошибкой выполнения bootstrap.
+
+## Что проверяется
+
+### ОС и обновления
+
+- дистрибутив, версия и ядро;
+- незавершённые операции `dpkg --audit`;
+- ожидающие обновления по текущему APT-кэшу;
+- наличие и состояние `unattended-upgrades`;
+- необходимость перезагрузки.
+
+Проверка обновлений не выполняет `apt update` и не изменяет APT-кэш.
+
+### Пользователи и SSH
+
+- пользователи с UID 0;
+- учётные записи с интерактивной оболочкой;
+- пустые пароли;
+- члены групп `sudo` и `wheel`;
+- активность SSH service;
+- эффективная конфигурация через `sshd -T`;
+- `PermitRootLogin`;
+- `PasswordAuthentication`;
+- `KbdInteractiveAuthentication`;
+- `PubkeyAuthentication`;
+- `PermitEmptyPasswords`;
+- `MaxAuthTries` и `LoginGraceTime`;
+- X11, agent forwarding и TCP forwarding;
+- права на `.ssh` и `authorized_keys`.
+
+### Сетевая поверхность
+
+- все TCP/UDP listeners через `ss -lntup`;
+- сервисы на `0.0.0.0`, `[::]` и `*`;
+- публичные базы данных и административные порты;
+- привязка CrowdSec LAPI `18888` к loopback.
+
+Публичные порты выводятся без автоматического закрытия. Скрипт не может определить правила внешнего cloud firewall.
+
+### Firewall, сканирование и ping
+
+- наличие nftables, UFW или iptables;
+- входящая политика `DROP/DENY`;
+- разрешение `established/related`;
+- отбрасывание `ct state invalid`;
+- блокировка или rate limit IPv4 echo-request;
+- блокировка или rate limit IPv6 echo-request;
+- состояние CrowdSec firewall bouncer.
+
+Полное отсутствие ответа на ping не считается обязательным. Проверка принимает как безопасный вариант полную блокировку echo-request, так и ограничение его частоты. Служебный ICMPv6 отдельно не блокируется этим проектом.
+
+### Kernel/sysctl
+
+Проверяются:
+
+```text
+net.ipv4.tcp_syncookies
+net.ipv4.icmp_echo_ignore_broadcasts
+net.ipv4.conf.*.accept_redirects
+net.ipv4.conf.*.send_redirects
+net.ipv4.conf.*.accept_source_route
+net.ipv4.conf.*.rp_filter
+net.ipv6.conf.*.accept_redirects
+net.ipv6.conf.*.accept_source_route
+kernel.kptr_restrict
+kernel.dmesg_restrict
+kernel.yama.ptrace_scope
+```
+
+Для VPN, policy routing и асимметричных маршрутов `rp_filter=2` считается допустимым loose mode.
+
+### CrowdSec
+
+- наличие `cscli`;
+- активность Security Engine;
+- результат `crowdsec -t`;
+- доступность Central API;
+- наличие валидного firewall bouncer;
+- наличие SSH/system acquisition;
+- наличие Caddy/Docker acquisition после поступления логов.
+
+Caddy datasource может отсутствовать в метриках до первого запроса, дошедшего до Caddy.
+
+### Docker
+
+- доступность Docker daemon;
+- пользователи группы `docker`;
+- `privileged=true`;
+- `network_mode=host`;
+- запуск процесса от root/default user;
+- отсутствие restart policy;
+- отсутствие ограничений ротации логов на уровне контейнера;
+- mount корневой файловой системы хоста;
+- mount `/var/run/docker.sock`;
+- публичные Docker port bindings.
+
+Некоторые предупреждения могут быть допустимы для конкретной инфраструктуры. Например, root user или writable rootfs иногда необходимы сетевым сервисам, но требуют ручной оценки.
+
+### Диск, время и журналы
+
+- заполнение корневого раздела;
+- заполнение inode;
+- NTP-синхронизация;
+- logrotate;
+- failed systemd units;
+- OOM-события за последние 24 часа;
+- неудачные SSH-входы за последние 24 часа.
+
+### Права на секреты
+
+Проверяются известные файлы:
+
+- CrowdSec API credentials;
+- firewall bouncer `.yaml.local`;
+- `/root/.ssh/authorized_keys`;
+- `.env` и `*.env` в `/opt` на глубине до пяти каталогов.
+
+Содержимое секретов не выводится.
+
+# Установка базовых средств защиты
+
+После выбора пункта `2` открывается существующее меню ролей:
+
+```text
+Куда устанавливаются базовые средства защиты?
+  1 — Панель управления (пока не реализовано)
+  2 — Нода CDN Origin
+  3 — Нода VLESS + selfsteal на Caddy
+```
+
+Пустой Enter выбирает профиль CDN Origin.
+
+## CDN Origin
+
+Сценарий:
+
+- выбирает Яндекс CDN, Билайн CDN или обоих провайдеров;
+- получает и регулярно обновляет доверенные CDN-диапазоны;
+- настраивает `trusted_proxies` для Caddy;
+- создаёт CrowdSec AllowList для CDN и администратора;
+- переносит CrowdSec Local API на `127.0.0.1:18888`;
+- устанавливает firewall bouncer;
+- применяет через firewall только SSH-решения, чтобы не блокировать CDN edge;
+- подключает Security Engine к CrowdSec Console;
+- проверяет remediation component и свежий API pull.
+
+## VLESS + selfsteal на Caddy
+
+После выбора профиля мастер уточняет:
 
 ```text
 Где запущен Caddy?
   1 — На хосте через systemd
   2 — В Docker
 ```
-
-Если обнаружены Docker, работающий daemon и файл `/opt/remnanode/selfsteal/Caddyfile`, по умолчанию предлагается вариант `2`. В остальных случаях — вариант `1`.
 
 ### Caddy на хосте
 
@@ -59,11 +201,11 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 /var/log/caddy/selfsteal-access.log
 ```
 
-Конфигурация проверяется командой `caddy validate`, затем применяется через `systemctl reload caddy`.
+Caddyfile проверяется через `caddy validate`, затем применяется через `systemctl reload caddy`.
 
 ### Caddy в Docker
 
-По умолчанию предлагается Caddyfile:
+По умолчанию используется:
 
 ```text
 /opt/remnanode/selfsteal/Caddyfile
@@ -71,190 +213,61 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 
 Скрипт:
 
-- находит работающий контейнер по bind mount этого файла;
-- определяет путь Caddyfile внутри контейнера, обычно `/etc/caddy/Caddyfile`;
-- проверяет конфигурацию командой `caddy validate` внутри контейнера;
-- сначала пытается выполнить `caddy reload`;
-- если reload через Admin API недоступен или завершается ошибкой, выполняет `docker restart`;
-- ожидает восстановления контейнера до 30 секунд и при ошибке показывает последние 100 строк его логов;
-- проверяет доступ CrowdSec к Docker socket и Docker logs.
-
-Такой fallback применяется в том числе для Caddy 2.9.x и контейнеров с отключённым Admin API, где новый Caddyfile иначе может остаться только на диске и не попасть в работающий процесс.
-
-В Docker-режиме Caddy пишет JSON access log в `stdout`, а CrowdSec читает его через Docker datasource:
-
-```yaml
-source: docker
-container_name:
-  - caddy-container-name
-follow_stdout: true
-follow_stderr: false
-labels:
-  type: caddy
-```
-
-Caddyfile обновляется без замены inode. Это необходимо, когда отдельный файл смонтирован в контейнер как bind mount.
+- находит контейнер по bind mount Caddyfile;
+- определяет путь файла внутри контейнера;
+- проверяет конфигурацию внутри контейнера;
+- сохраняет inode файла при изменении отдельного bind mount;
+- сначала запускает `caddy reload`;
+- при недоступном Admin API выполняет `docker restart`;
+- ждёт восстановления контейнера до 30 секунд;
+- при ошибке показывает последние 100 строк Docker logs;
+- направляет Caddy JSON access log в stdout;
+- создаёт CrowdSec Docker datasource с меткой `type: caddy`.
 
 ### Автоматическое определение selfsteal-блока
 
-Перед запросом домена установщик анализирует выбранный Caddyfile. Стандартный шаблон RemnaNode определяется автоматически:
+Стандартный шаблон RemnaNode определяется по сочетанию:
 
 ```caddyfile
-http://{$SELF_STEAL_DOMAIN} {
-    bind 0.0.0.0
-    redir https://{$SELF_STEAL_DOMAIN}{uri} permanent
-}
-
 https://{$SELF_STEAL_DOMAIN} {
     bind unix/{$CADDY_SOCKET_PATH}|0666
     root * /var/www/html
     try_files {path} /index.html
     file_server
 }
-
-:80 {
-    bind 0.0.0.0
-    respond 204
-}
 ```
 
-Автоматически выбирается только HTTPS-блок. Для подтверждения структуры установщик требует одновременно:
+Обрабатывается только HTTPS-блок с `bind unix/...` и `file_server`. HTTP redirect и технический `:80` не изменяются. Для нестандартного Caddyfile мастер запрашивает заголовок site block вручную.
 
-- заголовок `https://{$SELF_STEAL_DOMAIN}` либо другой HTTPS-заголовок с переменной окружения;
-- директиву `bind unix/...` внутри блока;
-- директиву `file_server` внутри блока.
+### Firewall bouncer VLESS-профиля
 
-HTTP-блок с редиректом и технический блок `:80` не изменяются.
-
-При однозначном совпадении выводится:
+Для прямой VLESS/selfsteal-ноды применяются решения:
 
 ```text
-[vless-selfsteal] Обнаружен стандартный selfsteal HTTPS-блок: https://{$SELF_STEAL_DOMAIN}
+ssh
+http
 ```
 
-Если структура нестандартная, совпадений несколько или блок не найден, мастер переходит к ручному запросу:
+Bouncer поддерживает nftables или iptables, IPv4 и IPv6. Для nftables используется hook `input`.
 
-```text
-Домен/адрес selfsteal-сайта:
-```
+# CrowdSec Local API и безопасное обновление bouncer
 
-Модуль распознавания находится в `detect-selfsteal-site.py`. Основной bootstrap также исправляет парсер site block так, чтобы фигурные скобки в `{$SELF_STEAL_DOMAIN}` не воспринимались как начало блока Caddyfile.
-
-### Общие действия VLESS-профиля
-
-Мастер запрашивает дополнительные доверенные адреса:
-
-```text
-Дополнительные доверенные IP через пробел или запятую [нет]:
-```
-
-Скрипт:
-
-- автоматически определяет стандартный selfsteal HTTPS-блок либо запрашивает его вручную;
-- сохраняет резервную копию Caddyfile;
-- добавляет в выбранный site block управляемый JSON access log;
-- устанавливает CrowdSec и коллекции Linux, SSH и Caddy;
-- создаёт acquisition для selfsteal access log;
-- добавляет IP текущего SSH-подключения и указанные IP в AllowList;
-- устанавливает firewall bouncer для SSH- и HTTP-решений;
-- проверяет CrowdSec, Caddy, bouncer и состояние пакетной базы.
-
-### Управляемый Caddy log
-
-На хосте в выбранный site block добавляется:
-
-```caddyfile
-# BEGIN CROWDSEC VLESS SELFSTEAL LOG
-log crowdsec_selfsteal {
-    output file /var/log/caddy/selfsteal-access.log {
-        mode 0640
-        roll_size 50MiB
-        roll_keep 10
-        roll_keep_for 720h
-    }
-    format json
-}
-# END CROWDSEC VLESS SELFSTEAL LOG
-```
-
-В Docker-режиме блок выглядит так:
-
-```caddyfile
-# BEGIN CROWDSEC VLESS SELFSTEAL LOG
-log crowdsec_selfsteal {
-    output stdout
-    format json
-}
-# END CROWDSEC VLESS SELFSTEAL LOG
-```
-
-При повторном запуске управляемый блок заменяется, а не дублируется.
-
-Acquisition создаётся в:
-
-```text
-/etc/crowdsec/acquis.d/caddy-selfsteal.yaml
-```
-
-Резервные копии Caddyfile сохраняются в:
-
-```text
-/var/lib/crowdsec/vless-selfsteal-backups/
-```
-
-## CrowdSec Local API
-
-Для обоих профилей Local API переносится на редкий loopback-порт:
+Оба профиля используют:
 
 ```text
 http://127.0.0.1:18888/
 ```
 
-Синхронно обновляются:
-
-```text
-/etc/crowdsec/config.yaml
-/etc/crowdsec/local_api_credentials.yaml
-/etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml.local
-```
-
-Перед изменениями создаются резервные копии. При неудачном запуске CrowdSec настройки LAPI откатываются.
-
-## Firewall bouncer
-
-Backend определяется автоматически:
+Перед обновлением firewall bouncer создаются новый API key и рабочий `.yaml.local`. Если пакетный post-install оставляет `dpkg` в незавершённом состоянии, установщик выполняет:
 
 ```bash
-iptables -V
+dpkg --configure -a
+apt-get -f install -y
 ```
 
-- при наличии `nf_tables` используется `crowdsec-firewall-bouncer-nftables`;
-- иначе используется `crowdsec-firewall-bouncer-iptables`.
+и проверяет итоговый `dpkg --audit`.
 
-Профили решений:
-
-```text
-CDN Origin          → ssh
-VLESS + selfsteal   → ssh, http
-```
-
-Для nftables используется входящий hook `input`. IPv4 и IPv6 остаются включёнными.
-
-Повторная установка безопасна: новый API-ключ и `.yaml.local` создаются до обновления пакета. Если пакетный `postinst` прерывает `dpkg`, установщик запускает восстановление через `dpkg --configure -a` и при необходимости `apt-get -f install`.
-
-## CrowdSec Console
-
-После установки мастер спрашивает:
-
-```text
-Подключить CrowdSec к панели app.crowdsec.net? [Y/n]:
-```
-
-Enrollment key вводится скрыто. После `Accept enroll` установщик перезапускает CrowdSec и firewall bouncer.
-
-## Проверки
-
-Общие проверки:
+# Ручные проверки
 
 ```bash
 systemctl status crowdsec --no-pager -l
@@ -267,13 +280,7 @@ cscli console status
 dpkg --audit
 ```
 
-Для Caddy на хосте:
-
-```bash
-systemctl status caddy --no-pager -l
-```
-
-Для Caddy в Docker:
+Для Docker Caddy:
 
 ```bash
 docker ps
@@ -284,20 +291,19 @@ docker inspect <caddy-container>
 Для nftables:
 
 ```bash
+nft list ruleset
 nft list table ip crowdsec
 nft list table ip6 crowdsec6
 ```
 
-У рабочего bouncer должны быть `Valid: ✔` и свежее значение `Last API pull`.
-
-## Закрепление версии
+# Закрепление версии
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/main/install.sh \
   | sudo VPN_INSTALL_REF=v1.0.0 sh
 ```
 
-## Секреты
+# Секреты
 
 Не публикуйте содержимое:
 
@@ -305,4 +311,5 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 - `/etc/crowdsec/local_api_credentials.yaml`;
 - `/etc/crowdsec/online_api_credentials.yaml`;
 - `/etc/crowdsec/bouncers/*.yaml.local`;
+- `.env` файлов;
 - enrollment key CrowdSec Console.

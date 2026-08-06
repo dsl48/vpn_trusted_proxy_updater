@@ -78,8 +78,10 @@ MENU
 run_audit() {
   download check-basic-security.sh
   download check-basic-security-extended.sh
+  download check-crowdsec-cdn-acquisitions.sh
   run_tty "$TMP_DIR/check-basic-security-extended.sh" \
     "$TMP_DIR/check-basic-security.sh"
+  run_tty "$TMP_DIR/check-crowdsec-cdn-acquisitions.sh"
 }
 
 run_baseline_install() {

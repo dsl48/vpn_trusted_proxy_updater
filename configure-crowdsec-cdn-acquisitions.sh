@@ -16,14 +16,16 @@ die() {
   exit 1
 }
 
-for command in crowdsec cscli systemctl install grep find awk sort flock python3; do
+for command in crowdsec cscli systemctl install grep find flock python3; do
   command -v "$command" >/dev/null 2>&1 || die "Не найдена команда: $command"
 done
 
 [[ -d /etc/crowdsec ]] || die "Не найден /etc/crowdsec"
+getent passwd caddy >/dev/null 2>&1 || die "Не найден пользователь caddy"
 
 ACQUIS_DIR=/etc/crowdsec/acquis.d
 CADDY_ACQUIS="$ACQUIS_DIR/caddy.yaml"
+SSHD_ACQUIS="$ACQUIS_DIR/sshd.yaml"
 BACKUP_ROOT=/var/lib/crowdsec/cdn-origin-acquisition-backups
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_DIR="$BACKUP_ROOT/$STAMP"
@@ -34,22 +36,30 @@ SYNC_PATH=/etc/systemd/system/crowdsec-cdn-allowlist-sync.path
 
 install -d -m 0755 "$ACQUIS_DIR"
 install -d -m 0700 "$BACKUP_DIR"
+install -d -o caddy -g caddy -m 0750 /var/log/caddy
+touch /var/log/caddy/access.log
+chown caddy:caddy /var/log/caddy/access.log
+chmod 0640 /var/log/caddy/access.log
 
-if [[ -f "$CADDY_ACQUIS" ]]; then
-  cp -a "$CADDY_ACQUIS" "$BACKUP_DIR/caddy.yaml"
-else
-  : >"$BACKUP_DIR/caddy.yaml.missing"
-fi
+for managed in caddy.yaml sshd.yaml; do
+  if [[ -f "$ACQUIS_DIR/$managed" ]]; then
+    cp -a "$ACQUIS_DIR/$managed" "$BACKUP_DIR/$managed"
+  else
+    : >"$BACKUP_DIR/$managed.missing"
+  fi
+done
 
 rollback_acquisitions() {
   local rc=$?
   trap - ERR
   log "Откатываю изменения acquisition после ошибки"
 
-  rm -f "$CADDY_ACQUIS"
-  if [[ -f "$BACKUP_DIR/caddy.yaml" ]]; then
-    cp -a "$BACKUP_DIR/caddy.yaml" "$CADDY_ACQUIS"
-  fi
+  for managed in caddy.yaml sshd.yaml; do
+    rm -f "$ACQUIS_DIR/$managed"
+    if [[ -f "$BACKUP_DIR/$managed" ]]; then
+      cp -a "$BACKUP_DIR/$managed" "$ACQUIS_DIR/$managed"
+    fi
+  done
 
   for name in setup.caddy.yaml setup.linux.yaml; do
     if [[ -f "$BACKUP_DIR/$name" ]]; then
@@ -94,6 +104,46 @@ EOF_ACQUIS
 chown root:root "$CADDY_ACQUIS"
 chmod 0644 "$CADDY_ACQUIS"
 
+ssh_source_found=0
+while IFS= read -r -d '' file; do
+  if grep -Eq '/var/log/(auth\.log|secure)' "$file" 2>/dev/null; then
+    ssh_source_found=1
+    break
+  fi
+  if grep -Eq 'source:[[:space:]]*journalctl' "$file" 2>/dev/null && \
+     grep -Eq '(ssh|sshd)\.service' "$file" 2>/dev/null; then
+    ssh_source_found=1
+    break
+  fi
+done < <(
+  find /etc/crowdsec -maxdepth 2 -type f \
+    \( -name 'acquis.yaml' -o -path '/etc/crowdsec/acquis.d/*.yaml' \) \
+    -print0 2>/dev/null
+)
+
+if [[ "$ssh_source_found" -eq 0 ]]; then
+  ssh_files=()
+  [[ -f /var/log/auth.log ]] && ssh_files+=(/var/log/auth.log)
+  [[ -f /var/log/secure ]] && ssh_files+=(/var/log/secure)
+  (( ${#ssh_files[@]} > 0 )) || {
+    echo "[cdn-crowdsec] ERROR: после отключения setup.linux.yaml не найден SSH log source" >&2
+    false
+  }
+
+  {
+    echo 'filenames:'
+    for file in "${ssh_files[@]}"; do
+      printf '  - %s\n' "$file"
+    done
+    echo 'labels:'
+    echo '  type: syslog'
+    echo 'source: file'
+  } >"$SSHD_ACQUIS"
+  chown root:root "$SSHD_ACQUIS"
+  chmod 0644 "$SSHD_ACQUIS"
+  log "Создан отдельный SSH acquisition: $SSHD_ACQUIS"
+fi
+
 remaining_bad=()
 while IFS= read -r -d '' file; do
   [[ "$file" == "$CADDY_ACQUIS" ]] && continue
@@ -117,6 +167,16 @@ if (( ${#remaining_bad[@]} > 0 )); then
   printf '  %s\n' "${remaining_bad[@]}" >&2
   false
 fi
+
+log "Проверяю конфигурацию CrowdSec"
+crowdsec -t
+
+log "Перезапускаю CrowdSec с детерминированными acquisition"
+systemctl enable crowdsec
+systemctl restart crowdsec
+systemctl is-active --quiet crowdsec
+
+trap - ERR
 
 cat >"$SYNC_SCRIPT" <<'EOF_SYNC'
 #!/usr/bin/env bash
@@ -224,21 +284,14 @@ EOF_PATH
 chown root:root "$SYNC_SERVICE" "$SYNC_PATH"
 chmod 0644 "$SYNC_SERVICE" "$SYNC_PATH"
 
-log "Проверяю конфигурацию CrowdSec"
-crowdsec -t
-
-log "Перезапускаю CrowdSec с детерминированными acquisition"
-systemctl enable --now crowdsec
-systemctl restart crowdsec
-systemctl is-active --quiet crowdsec || die "CrowdSec не запустился"
-
 systemctl daemon-reload
 systemctl enable --now crowdsec-cdn-allowlist-sync.path
 systemctl start crowdsec-cdn-allowlist-sync.service
 systemctl is-active --quiet crowdsec-cdn-allowlist-sync.path || \
   die "Path unit синхронизации allowlist не активен"
 
-trap - ERR
+find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d \
+  -printf '%T@ %p\n' | sort -nr | awk 'NR>20 {print $2}' | xargs -r rm -rf
 
 log "Готово"
 log "Caddy анализируется только из /var/log/caddy/access.log"

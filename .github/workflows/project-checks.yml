@@ -1,0 +1,77 @@
+name: Project checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with git
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            git fetch --depth=1 origin "refs/pull/${PR_NUMBER}/merge"
+          else
+            git fetch --depth=1 origin "$COMMIT_SHA"
+          fi
+          git checkout --detach FETCH_HEAD
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' file; do
+            case "$file" in
+              ./install.sh)
+                /bin/sh -n "$file"
+                ;;
+              *)
+                /bin/bash -n "$file"
+                ;;
+            esac
+          done < <(find . -type f -name '*.sh' -print0)
+
+      - name: Check generated Remnawave panel payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat crowdsec-remnawave-panel/part-*.sh.inc > /tmp/remnawave-panel.sh
+          /bin/bash -n /tmp/remnawave-panel.sh
+
+      - name: Test generated CrowdSec bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env CROWDSEC_BOOTSTRAP_TEST_ONLY=1 \
+            /bin/bash ./install-crowdsec-bootstrap.sh
+
+      - name: Compile Python files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q .
+
+      - name: ShellCheck critical errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -type f -name '*.sh' -print0 \
+            | xargs -0 shellcheck --severity=error

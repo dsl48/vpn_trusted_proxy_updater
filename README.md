@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
 ```text
 check-basic-security.sh
 check-basic-security-extended.sh
-check-crowdsec-cdn-acquisitions.sh
+check-crowdsec-caddy-acquisitions.sh
 ```
 
 Она работает только в режиме чтения и проверяет:
@@ -43,7 +43,7 @@ check-crowdsec-cdn-acquisitions.sh
 - публичные listeners;
 - firewall, ping и базовые `sysctl`;
 - CrowdSec и firewall bouncer;
-- acquisition-схему CrowdSec на CDN Origin;
+- acquisition-схему CrowdSec во всех профилях с выделенным Caddy access log;
 - Fail2Ban;
 - TrafficGuard и фактическое заполнение ipset;
 - Docker и профильное исключение для `remnawave-node-agent`;
@@ -123,6 +123,8 @@ TRAFFIC_GUARD_INSTALLER_REF=<commit-or-branch>
 127.0.0.1:18888
 ```
 
+Для всех профилей, которые создают выделенный Caddy file/docker acquisition, запускается `sanitize-crowdsec-caddy-acquisitions.sh`. Он отключает generated `setup.caddy.yaml` и `setup.linux.yaml`, если они повторно подают operational journal Caddy или его копию из общего syslog, сохраняет backup и проверяет наличие отдельного SSH datasource.
+
 ### Панель Remnawave + Caddy
 
 Профиль реализован в `install-crowdsec-remnawave-panel.sh`. Он поддерживает:
@@ -146,6 +148,7 @@ Nginx и Traefik не поддерживаются этим профилем.
 - выполняет `caddy validate`, reload и HTTPS-проверку панели;
 - устанавливает CrowdSec Security Engine и коллекции Linux/Caddy;
 - создаёт file acquisition для Caddy;
+- исключает generated operational journal/syslog acquisitions;
 - предлагает добавить IP текущей SSH-сессии и дополнительные IP/CIDR в `remnawave-panel-trusted`;
 - устанавливает firewall bouncer с именем `remnawave-panel-firewall-bouncer`;
 - проверяет свежий API pull remediation component.
@@ -169,6 +172,7 @@ Cloudflare/CDN/reverse proxy:
 /var/log/caddy/remnawave-panel-access.log
 /etc/crowdsec/acquis.d/remnawave-panel-caddy.yaml
 /etc/crowdsec/remnawave-panel-profile.env
+/var/lib/crowdsec/caddy-acquisition-backups/
 ```
 
 Для доставки большого профиля bootstrap собирает проверяемый payload из файлов каталога:
@@ -188,7 +192,7 @@ crowdsec-remnawave-panel/
 - отключает generated `setup.caddy.yaml`, чтобы operational journal Caddy не анализировался как access log;
 - отключает generated `setup.linux.yaml`, потому что `/var/log/syslog` или `/var/log/messages` могут повторно содержать те же сообщения Caddy;
 - сохраняет отключённые acquisition-файлы в `/var/lib/crowdsec/cdn-origin-acquisition-backups/`;
-- оставляет отдельный SSH acquisition;
+- оставляет или создаёт отдельный SSH acquisition;
 - создаёт CrowdSec AllowList для CDN и администратора;
 - автоматически синхронизирует AllowList при изменении CDN-диапазонов через `crowdsec-cdn-allowlist-sync.path`;
 - устанавливает firewall bouncer;
@@ -215,6 +219,7 @@ crowdsec-remnawave-panel/
 - определяет стандартный HTTPS selfsteal block;
 - добавляет управляемый JSON access log;
 - создаёт file или Docker acquisition;
+- исключает generated operational journal/syslog acquisitions;
 - устанавливает firewall bouncer для SSH- и HTTP-решений;
 - проверяет регистрацию и свежий Local API pull.
 

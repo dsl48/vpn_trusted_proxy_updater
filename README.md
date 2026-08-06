@@ -21,7 +21,8 @@ curl -fsSL https://raw.githubusercontent.com/dsl48/vpn_trusted_proxy_updater/mai
     Read-only аудит ОС, SSH, сети, firewall, Docker и средств защиты.
 
 2 — Установка базовых настроек безопасности
-    Усиление ОС, SSH, sysctl, firewall и автоматических обновлений.
+    Интерактивное усиление SSH, sysctl, ping, обновлений и журналов
+    с backup и автоматическим откатом опасных изменений.
 
 3 — Установка TrafficGuard
     Отсекает известные сети сканеров на уровне iptables/ipset,
@@ -63,15 +64,146 @@ check-basic-security-extended.sh
 
 ## 2. Установка базовых настроек безопасности
 
-Пункт зарезервирован для отдельного безопасного профиля настройки:
+Мастер находится в `install-baseline-security.sh`. Создание нового администратора исключено: используется только выбранная существующая учётная запись.
 
-- SSH;
-- sysctl;
-- host firewall;
-- автоматических security updates;
-- журналирования и системных лимитов.
+Перед каждым предложением проверяется текущее эффективное состояние. Уже применённая или более строгая настройка выводится как `[OK]` и не запрашивается повторно. Каждое изменение подтверждается отдельным вопросом `Y/n` либо `y/N`.
 
-До утверждения совместимого профиля для VPN-нод пункт ничего не меняет и возвращает пользователя в главное меню.
+### Транзакции и автоматический откат
+
+Потенциально опасные изменения SSH, сетевых `sysctl` и nftables выполняются транзакционно:
+
+1. создаётся backup в `/var/lib/server-security/transactions/`;
+2. создаются отдельные systemd service и timer автоматического восстановления;
+3. изменение применяется и технически проверяется;
+4. пользователь проверяет новую SSH-сессию, VPN и публичные сервисы;
+5. только после явного подтверждения таймер удаляется.
+
+Сроки автоматического отката:
+
+```text
+SSH       5 минут
+sysctl    5 минут
+nftables  3 минуты
+```
+
+При ошибке `sshd -t`, неактивном SSH service, неприменившемся sysctl или ошибке nftables восстановление выполняется немедленно. Если пользователь не подтверждает работоспособность, таймер остаётся активным, а мастер прекращает дальнейшие изменения.
+
+### SSH-ключ
+
+Мастер предлагает выбрать существующего пользователя и проверяет `authorized_keys` через `ssh-keygen`.
+
+Когда рабочего ключа нет, показывается инструкция для macOS, Linux и Windows PowerShell:
+
+```bash
+ssh-keygen -t ed25519 -a 100 \
+  -f ~/.ssh/vpn-admin-ed25519 \
+  -C "vpn-admin"
+```
+
+Доступны два способа установки публичного ключа:
+
+- вставка одной строки `.pub` в мастер;
+- выполнение `ssh-copy-id` из другого терминала.
+
+Приватный ключ блокируется по сигнатуре `BEGIN ... PRIVATE KEY`. Публичный ключ проверяется командой `ssh-keygen -lf`, после чего выставляются права `0700` для `.ssh` и `0600` для `authorized_keys`.
+
+`PasswordAuthentication` и `KbdInteractiveAuthentication` не предлагается отключать, пока пользователь явно не подтвердит успешный вход по ключу в новой SSH-сессии.
+
+### SSH hardening
+
+Отдельно проверяются и при необходимости предлагаются:
+
+```text
+PubkeyAuthentication yes
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+MaxAuthTries 3
+LoginGraceTime 30
+MaxStartups 10:30:60
+X11Forwarding no
+AllowAgentForwarding no
+```
+
+Полный запрет root-login и отключение `AllowTcpForwarding` автоматически не выполняются.
+
+Управляемый drop-in:
+
+```text
+/etc/ssh/sshd_config.d/00-server-security.conf
+```
+
+После записи обязательны `sshd -t`, reload активного `ssh.service`/`sshd.service` и проверка эффективных значений через `sshd -T`.
+
+### Автоматические обновления
+
+Отдельно предлагаются:
+
+- установка `unattended-upgrades`;
+- включение автоматических security updates;
+- удаление неиспользуемых зависимостей;
+- автоматическая перезагрузка, по умолчанию отключённая.
+
+Управляемый файл:
+
+```text
+/etc/apt/apt.conf.d/90-server-security
+```
+
+### Kernel и сетевые sysctl
+
+Проверяются и предлагаются отдельными вопросами:
+
+- SYN cookies;
+- игнорирование broadcast echo;
+- запрет IPv4/IPv6 redirects;
+- запрет source routing;
+- reverse path filtering;
+- `kernel.kptr_restrict`;
+- `kernel.dmesg_restrict`;
+- `kernel.yama.ptrace_scope`.
+
+Для VPN применяется только loose reverse path filtering `2`; уже активные значения `1` или `2` считаются настроенными и не изменяются.
+
+Управляемый файл:
+
+```text
+/etc/sysctl.d/90-server-security.conf
+```
+
+Перед применением сохраняются исходный файл и runtime-значения каждого изменяемого параметра.
+
+### Ограничение ping
+
+При наличии nftables мастер отдельно предлагает ограничить IPv4 и IPv6 echo-request до двух запросов в секунду с burst 5. Служебный ICMPv6 не блокируется.
+
+Используется только собственная таблица:
+
+```text
+table inet server_security
+```
+
+Мастер не выполняет `nft flush ruleset` и не изменяет таблицы Docker, CrowdSec, TrafficGuard или UFW. Для автозагрузки создаётся отдельный `server-security-nft.service`.
+
+### Fail2Ban
+
+Если CrowdSec и firewall bouncer уже активны, Fail2Ban не предлагается. В остальных случаях мастер может отдельно:
+
+- установить или запустить Fail2Ban;
+- включить jail `sshd`;
+- добавить IP текущего SSH-подключения в `ignoreip`.
+
+### Время, журналы и права
+
+Отдельно проверяются и предлагаются:
+
+- включение системной NTP-синхронизации;
+- установка `logrotate`;
+- лимиты journald `SystemMaxUse=512M` и `RuntimeMaxUse=256M`;
+- удаление прав `other` у обнаруженных CrowdSec credentials и `.env`-файлов.
+
+Массовые `chmod -R` и `chown -R` не используются.
 
 ## 3. Установка TrafficGuard
 
